@@ -20,6 +20,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary_name: cheraghtunnel
             release_name: cheraghtunnel-linux-amd64
+            use_cross: false
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             binary_name: cheraghtunnel
@@ -29,14 +30,17 @@ jobs:
             target: x86_64-pc-windows-msvc
             binary_name: cheraghtunnel.exe
             release_name: cheraghtunnel-windows-amd64.exe
+            use_cross: false
           - os: macos-latest
             target: x86_64-apple-darwin
             binary_name: cheraghtunnel
             release_name: cheraghtunnel-macos-amd64
+            use_cross: false
           - os: macos-latest
             target: aarch64-apple-darwin
             binary_name: cheraghtunnel
             release_name: cheraghtunnel-macos-arm64
+            use_cross: false
 
     steps:
       - name: Checkout Code
@@ -48,17 +52,17 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-latest' && !matrix.use_cross
+        if: matrix.os == 'ubuntu-latest' && matrix.use_cross == false
         run: |
           sudo apt-get update
           sudo apt-get install -y libsqlite3-dev build-essential
 
       - name: Build Release Binary (Standard)
-        if: !matrix.use_cross
+        if: matrix.use_cross == false
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Build Release Binary (Cross)
-        if: matrix.use_cross
+        if: matrix.use_cross == true
         run: |
           cargo install cross
           cross build --release --target ${{ matrix.target }}
