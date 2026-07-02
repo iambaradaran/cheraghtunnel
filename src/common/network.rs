@@ -53,9 +53,17 @@ pub fn optimize_socket(stream: &TcpStream) -> io::Result<()> {
     Ok(())
 }
 
-/// Pre-configures TcpListener sockets for reuse
-pub fn optimize_listener(listener: &TcpListener) -> io::Result<()> {
-    let socket = SockRef::from(listener);
-    let _ = socket.set_reuse_address(true);
-    Ok(())
+
+
+/// Creates and binds a TCP listener with SO_REUSEADDR and SO_REUSEPORT enabled before binding
+pub fn bind_listener(addr: std::net::SocketAddr) -> io::Result<TcpListener> {
+    use socket2::{Socket, Domain, Type, Protocol};
+    let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(not(target_os = "windows"))]
+    let _ = socket.set_reuse_port(true);
+    socket.bind(&addr.into())?;
+    socket.listen(128)?;
+    let listener: std::net::TcpListener = socket.into();
+    TcpListener::from_std(listener)
 }

@@ -4,7 +4,7 @@ pub mod transport;
 use std::error::Error;
 use std::sync::Arc;
 use std::task::Poll;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use yamux::{Config, Connection, Mode};
 use tokio_util::compat::{TokioAsyncReadCompatExt, FuturesAsyncReadCompatExt};
 
@@ -131,11 +131,12 @@ pub async fn run_server(
         protocol, control_port, public_port
     );
 
-    // Bind BOTH listeners upfront (Fix: public port was re-bound inside loop)
-    let control_listener = TcpListener::bind(format!("0.0.0.0:{}", control_port)).await?;
-    let _ = crate::common::network::optimize_listener(&control_listener);
-    let public_listener = Arc::new(TcpListener::bind(format!("0.0.0.0:{}", public_port)).await?);
-    let _ = crate::common::network::optimize_listener(&public_listener);
+    let control_addr: std::net::SocketAddr = format!("0.0.0.0:{}", control_port).parse()?;
+    let public_addr: std::net::SocketAddr = format!("0.0.0.0:{}", public_port).parse()?;
+
+    // Bind BOTH listeners upfront with SO_REUSEADDR/SO_REUSEPORT configured before binding
+    let control_listener = crate::common::network::bind_listener(control_addr)?;
+    let public_listener = Arc::new(crate::common::network::bind_listener(public_addr)?);
     println!("[SERVER] Listening for public user traffic on port: {}", public_port);
     
     // Accept the client control connection
