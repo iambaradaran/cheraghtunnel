@@ -363,7 +363,7 @@ async fn deploy_tunnel_handler(
         println!("[DEPLOY] Initiating SSH deployment on {}@{}...", payload.username, payload.host);
         
         let node_url = format!("http://{}/api/tunnels/{}/node-script", payload.panel_host, id);
-        let remote_cmd = format!("curl -sSf {} | bash", node_url);
+        let remote_cmd = format!("curl -sSfL -o /tmp/node.sh {} && bash /tmp/node.sh && rm -f /tmp/node.sh", node_url);
         
         let password_str = payload.password.unwrap_or_default();
         let result = tokio::process::Command::new("sshpass")
