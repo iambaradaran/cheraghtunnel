@@ -118,6 +118,18 @@ impl YamuxSession {
     }
 }
 
+struct LoopGuard {
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for LoopGuard {
+    fn drop(&mut self) {
+        if let Some(h) = self.handle.take() {
+            h.abort();
+        }
+    }
+}
+
 pub async fn run_server(
     control_port: u16,
     public_port: u16,
@@ -139,8 +151,14 @@ pub async fn run_server(
     let public_listener = Arc::new(crate::common::network::bind_listener(public_addr)?);
     println!("[SERVER] Listening for public user traffic on port: {}", public_port);
     
+    let mut loop_guard = LoopGuard { handle: None };
+
     // Accept the client control connection
     while let Ok((control_socket, addr)) = control_listener.accept().await {
+        if let Some(h) = loop_guard.handle.take() {
+            h.abort();
+        }
+
         let _ = crate::common::network::optimize_socket(&control_socket);
         println!("[SERVER] Client node connected from: {}", addr);
         
@@ -166,7 +184,7 @@ pub async fn run_server(
 
         // Accept user connections and forward them via Yamux virtual streams
         let public_listener_clone = public_listener.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             while let Ok((user_socket, _)) = public_listener_clone.accept().await {
                 let _ = crate::common::network::optimize_socket(&user_socket);
                 println!("[SERVER] User connected to public port, establishing tunnel stream...");
@@ -187,6 +205,7 @@ pub async fn run_server(
                 }
             }
         });
+        loop_guard.handle = Some(handle);
     }
 
     Ok(())
