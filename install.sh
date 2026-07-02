@@ -12,6 +12,33 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# Ask for custom configuration interactively
+echo "----------------------------------------------------------"
+echo "Please configure your CheraghTunnel Web Panel:"
+echo "----------------------------------------------------------"
+
+# 1. Custom Web Panel Port
+read -p "Enter Web Panel Port [Default: 8000]: " PANEL_PORT
+PANEL_PORT=${PANEL_PORT:-8000}
+
+# Validate port is a number
+if ! [[ "$PANEL_PORT" =~ ^[0-9]+$ ]] || [ "$PANEL_PORT" -lt 1 ] || [ "$PANEL_PORT" -gt 65535 ]; then
+  echo "Invalid port. Using default: 8000"
+  PANEL_PORT=8000
+fi
+
+# 2. Custom Admin Username
+read -p "Enter Admin Username [Default: admin]: " ADMIN_USER
+ADMIN_USER=${ADMIN_USER:-admin}
+
+# 3. Custom Admin Password
+read -s -p "Enter Admin Password [Press Enter to generate a random one]: " ADMIN_PASS
+echo "" # New line after hidden password input
+if [ -z "$ADMIN_PASS" ]; then
+  ADMIN_PASS="cheragh_$(openssl rand -hex 3 2>/dev/null || echo $((RANDOM % 90000 + 10000)))"
+  echo "Generated random password: $ADMIN_PASS"
+fi
+
 # Install system dependencies
 echo "Installing system package dependencies..."
 apt-get update && apt-get install -y build-essential sqlite3 curl git sshpass || true
@@ -35,16 +62,17 @@ chmod +x /usr/local/bin/cheraghtunnel
 mkdir -p /etc/cheraghtunnel
 mkdir -p /var/lib/cheraghtunnel
 
-# Initialize DB to generate default admin credentials
-echo "Initializing SQLite Database..."
-/usr/local/bin/cheraghtunnel panel --port 8000 --db-path /var/lib/cheraghtunnel/cheraghtunnel.db &
+# Initialize DB to generate default database schemas
+echo "Initializing SQLite Database schema..."
+/usr/local/bin/cheraghtunnel panel --port $PANEL_PORT --db-path /var/lib/cheraghtunnel/cheraghtunnel.db &
 PID=$!
 sleep 2
 kill $PID
 
-# Retrieve credentials
-PASSWORD=$(sqlite3 /var/lib/cheraghtunnel/cheraghtunnel.db "SELECT value FROM settings WHERE key='admin_password';")
-USERNAME=$(sqlite3 /var/lib/cheraghtunnel/cheraghtunnel.db "SELECT value FROM settings WHERE key='admin_username';")
+# Apply custom credentials
+echo "Applying custom credentials to Database..."
+sqlite3 /var/lib/cheraghtunnel/cheraghtunnel.db "INSERT OR REPLACE INTO settings (key, value) VALUES ('admin_username', '$ADMIN_USER');"
+sqlite3 /var/lib/cheraghtunnel/cheraghtunnel.db "INSERT OR REPLACE INTO settings (key, value) VALUES ('admin_password', '$ADMIN_PASS');"
 
 # Setup systemd service
 echo "Configuring systemd service daemon..."
@@ -56,7 +84,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/var/lib/cheraghtunnel
-ExecStart=/usr/local/bin/cheraghtunnel panel --port 8000 --db-path /var/lib/cheraghtunnel/cheraghtunnel.db
+ExecStart=/usr/local/bin/cheraghtunnel panel --port $PANEL_PORT --db-path /var/lib/cheraghtunnel/cheraghtunnel.db
 Restart=always
 User=root
 
@@ -70,9 +98,9 @@ systemctl start cheraghtunnel
 
 echo "=========================================================="
 echo "  CheraghTunnel Web Panel successfully installed!"
-echo "  Access Port: http://$(curl -s ifconfig.me):8000"
+echo "  Access URL: http://$(curl -s ifconfig.me || echo "YOUR_SERVER_IP"):$PANEL_PORT"
 echo "  "
 echo "  Credentials:"
-echo "  Username: $USERNAME"
-echo "  Password: $PASSWORD"
+echo "  Username: $ADMIN_USER"
+echo "  Password: $ADMIN_PASS"
 echo "=========================================================="
