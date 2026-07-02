@@ -12,13 +12,13 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# Ask for custom configuration interactively
+# Ask for custom configuration interactively (using /dev/tty to support curl | bash piping)
 echo "----------------------------------------------------------"
 echo "Please configure your CheraghTunnel Web Panel:"
 echo "----------------------------------------------------------"
 
 # 1. Custom Web Panel Port
-read -p "Enter Web Panel Port [Default: 8000]: " PANEL_PORT
+read -p "Enter Web Panel Port [Default: 8000]: " PANEL_PORT < /dev/tty
 PANEL_PORT=${PANEL_PORT:-8000}
 
 # Validate port is a number
@@ -28,11 +28,11 @@ if ! [[ "$PANEL_PORT" =~ ^[0-9]+$ ]] || [ "$PANEL_PORT" -lt 1 ] || [ "$PANEL_POR
 fi
 
 # 2. Custom Admin Username
-read -p "Enter Admin Username [Default: admin]: " ADMIN_USER
+read -p "Enter Admin Username [Default: admin]: " ADMIN_USER < /dev/tty
 ADMIN_USER=${ADMIN_USER:-admin}
 
 # 3. Custom Admin Password
-read -s -p "Enter Admin Password [Press Enter to generate a random one]: " ADMIN_PASS
+read -s -p "Enter Admin Password [Press Enter to generate a random one]: " ADMIN_PASS < /dev/tty
 echo "" # New line after hidden password input
 if [ -z "$ADMIN_PASS" ]; then
   ADMIN_PASS="cheragh_$(openssl rand -hex 3 2>/dev/null || echo $((RANDOM % 90000 + 10000)))"
@@ -47,16 +47,35 @@ apt-get update && apt-get install -y build-essential sqlite3 curl git sshpass ||
 if ! command -v cargo &> /dev/null; then
     echo "Installing Rust compiler..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source $HOME/.cargo/env
+    source $HOME/.cargo/env 2>/dev/null || . $HOME/.cargo/env 2>/dev/null || true
 fi
 
-# Build project in release mode
-echo "Compiling CheraghTunnel Rust binary..."
-cargo build --release
+# Prepare source code if Cargo.toml is not in the current working directory
+echo "Preparing CheraghTunnel source code..."
+IS_CLONED=false
+if [ -f "Cargo.toml" ]; then
+    echo "Found Cargo.toml in the current directory. Building directly..."
+    cargo build --release
+else
+    echo "Cargo.toml not found in current directory. Cloning repository from GitHub..."
+    rm -rf /tmp/cheraghtunnel-source
+    git clone https://github.com/iambaradaran/cheraghtunnel.git /tmp/cheraghtunnel-source
+    cd /tmp/cheraghtunnel-source
+    # Source cargo again just in case path needs refresh
+    source $HOME/.cargo/env 2>/dev/null || . $HOME/.cargo/env 2>/dev/null || true
+    cargo build --release
+    IS_CLONED=true
+fi
 
 # Install binary to system path
 cp target/release/cheraghtunnel /usr/local/bin/cheraghtunnel
 chmod +x /usr/local/bin/cheraghtunnel
+
+# Cleanup cloned source folder if cloned
+if [ "$IS_CLONED" = true ]; then
+    cd - > /dev/null
+    rm -rf /tmp/cheraghtunnel-source
+fi
 
 # Setup config and DB folders
 mkdir -p /etc/cheraghtunnel
