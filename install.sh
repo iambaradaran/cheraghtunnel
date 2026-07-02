@@ -83,7 +83,7 @@ mkdir -p /var/lib/cheraghtunnel
 
 # Initialize DB to generate default database schemas
 echo "Initializing SQLite Database schema..."
-/usr/local/bin/cheraghtunnel panel --port $PANEL_PORT --db-path /var/lib/cheraghtunnel/cheraghtunnel.db &
+/usr/local/bin/cheraghtunnel panel --port $PANEL_PORT --db-path /var/lib/cheraghtunnel/cheraghtunnel.db > /dev/null 2>&1 &
 PID=$!
 sleep 2
 kill $PID
