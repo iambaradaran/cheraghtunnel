@@ -9,30 +9,86 @@ permissions:
   contents: write
 
 jobs:
-  build-linux:
-    name: Build Linux Binary
-    runs-on: ubuntu-latest
+  build:
+    name: Build - ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: cheraghtunnel
+            release_name: cheraghtunnel-linux-amd64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            binary_name: cheraghtunnel
+            release_name: cheraghtunnel-linux-arm64
+            use_cross: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: cheraghtunnel.exe
+            release_name: cheraghtunnel-windows-amd64.exe
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary_name: cheraghtunnel
+            release_name: cheraghtunnel-macos-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: cheraghtunnel
+            release_name: cheraghtunnel-macos-arm64
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
-      - name: Install Dependencies
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest' && !matrix.use_cross
         run: |
           sudo apt-get update
           sudo apt-get install -y libsqlite3-dev build-essential
 
-      - name: Build Release Binary
-        run: cargo build --release
+      - name: Build Release Binary (Standard)
+        if: !matrix.use_cross
+        run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Rename Binary for Release
-        run: mv target/release/cheraghtunnel cheraghtunnel-linux-amd64
+      - name: Build Release Binary (Cross)
+        if: matrix.use_cross
+        run: |
+          cargo install cross
+          cross build --release --target ${{ matrix.target }}
 
-      - name: Create GitHub Release and Upload Asset
+      - name: Prepare Binary
+        shell: bash
+        run: |
+          mv target/${{ matrix.target }}/release/${{ matrix.binary_name }} ${{ matrix.release_name }}
+
+      - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: cheraghtunnel-linux-amd64
+          files: ${{ matrix.release_name }}
+          body: |
+            ## 🕯️ چراغ‌تونل (CheraghTunnel) - Release ${{ github.ref_name }}
+            
+            نسخه جدید و بهینه‌سازی شده چراغ‌تونل با پشتیبانی کامل از قابلیت‌های پیشرفته و رفع باگ‌ها منتشر شد.
+            
+            ### 🌟 قابلیت‌های برجسته در این نسخه:
+            - **⚙️ سیستم ویرایش تانل (Edit Configurations):** امکان تغییر زنده‌ی پورت‌ها، پروتکل‌ها، توکن و تنظیمات تانل بدون نیاز به ثبت مجدد.
+            - **🔄 استارت هوشمند دیپلوی (Auto-Start on SSH Deploy):** پورت کنترل در سرور ایران بلافاصله در زمان فشردن دکمه دیپلوی فعال شده و نود خارج بدون مشکل متصل می‌شود.
+            - **⚡ رفع مشکل تداخل پورت (SO_REUSEADDR / SO_REUSEPORT):** آزادسازی آنی پورت‌ها در لایه سوکت سیستم‌عامل برای پایداری و تغییر بدون وقفه پورت تانل‌ها.
+            - **🛡️ رفع قفل فایل (Atomic Release Update):** به‌روزرسانی نودها به صورت اتمیک انجام شده و ارورهای مربوط به قفل بودن باینری یا `Text file busy` به طور کامل برطرف شده است.
+            
+            ---
+            ### 📦 فایل‌های اجرایی (Assets):
+            - **Linux (amd64 / Intel / AMD):** `cheraghtunnel-linux-amd64`
+            - **Linux (arm64 / Raspberry Pi / Ampere):** `cheraghtunnel-linux-arm64`
+            - **Windows (amd64):** `cheraghtunnel-windows-amd64.exe`
+            - **macOS (Intel):** `cheraghtunnel-macos-amd64`
+            - **macOS (Apple Silicon / M1 / M2 / M3):** `cheraghtunnel-macos-arm64`
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
