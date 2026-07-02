@@ -30,7 +30,7 @@ pub fn optimize_socket(stream: &TcpStream) -> io::Result<()> {
         let optval = b"bbr\0";
         unsafe {
             let ret = libc::setsockopt(
-                std::os::fd::AsRawFd::as_raw_fd(&socket),
+                std::os::fd::AsRawFd::as_raw_fd(stream),
                 libc::IPPROTO_TCP,
                 libc::TCP_CONGESTION,
                 optval.as_ptr() as *const libc::c_void,
@@ -40,7 +40,7 @@ pub fn optimize_socket(stream: &TcpStream) -> io::Result<()> {
                 // Fallback to cubic if BBR is not configured in kernel
                 let optval_cubic = b"cubic\0";
                 libc::setsockopt(
-                    std::os::fd::AsRawFd::as_raw_fd(&socket),
+                    std::os::fd::AsRawFd::as_raw_fd(stream),
                     libc::IPPROTO_TCP,
                     libc::TCP_CONGESTION,
                     optval_cubic.as_ptr() as *const libc::c_void,
