@@ -141,7 +141,7 @@ pub async fn run_server(
     // Accept the client control connection
     while let Ok((control_socket, addr)) = control_listener.accept().await {
         let _ = crate::common::network::optimize_socket(&control_socket);
-        println!("[SERVER] Client agent connected from: {}", addr);
+        println!("[SERVER] Client node connected from: {}", addr);
         
         // Perform server handshake first
         let control_socket = match transport::server_handshake(control_socket, protocol, token, decoy.clone()).await {

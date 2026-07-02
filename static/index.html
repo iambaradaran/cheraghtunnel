@@ -93,7 +93,7 @@
                 </div>
                 <div class="node">
                     <div class="node-icon kharej"></div>
-                    <span>Kharej Server (Tunnel Agent)</span>
+                    <span>Kharej Server (Tunnel Node)</span>
                 </div>
                 <div class="flow-line active"></div>
                 <div class="node">
@@ -195,17 +195,17 @@
         </div>
     </div>
 
-    <!-- Agent Command Modal -->
+    <!-- Node Command Modal -->
     <div id="cmd-modal" class="modal-overlay" style="display: none;">
         <div class="glass-card modal-card cmd-card">
-            <h3>Setup Agent on Kharej Server</h3>
-            <p>Run the following command on your **Kharej server** to install and run the client agent automatically:</p>
+            <h3>Setup Node on Kharej Server</h3>
+            <p>Run the following command on your **Kharej server** to install and run the client node automatically:</p>
             <div class="code-box">
-                <code id="agent-command-text"></code>
+                <code id="node-command-text"></code>
                 <button id="copy-cmd-btn" class="btn btn-secondary btn-small">Copy Command</button>
             </div>
             <p class="warning-alert">
-                <strong>NOTE:</strong> The command fetches the custom script compiled dynamically for this tunnel configuration.
+                <strong>NOTE:</strong> The command fetches the custom script built for this tunnel configuration.
             </p>
             <div class="modal-actions">
                 <button type="button" id="close-cmd-modal" class="btn btn-primary">Done</button>
@@ -216,9 +216,9 @@
     <!-- SSH Deploy Modal -->
     <div id="deploy-modal" class="modal-overlay" style="display: none;">
         <div class="glass-card modal-card">
-            <h3>SSH Auto-Deploy Client Agent</h3>
+            <h3>SSH Auto-Deploy Client Node</h3>
             <p style="color: var(--text-secondary); margin-bottom: 20px; font-size: 0.9rem;">
-                Enter your Kharej server SSH credentials. The panel will automatically log in, download the dependencies, compile the client, and start the background agent.
+                Enter your Kharej server SSH credentials. The panel will automatically log in, download the dependencies, set up the client, and start the background node.
             </p>
             <form id="deploy-tunnel-form">
                 <input type="hidden" id="deploy-tunnel-id">
@@ -244,7 +244,7 @@
                 </div>
                 <div class="modal-actions">
                     <button type="button" id="close-deploy-modal" class="btn btn-secondary">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Deploy Agent</button>
+                    <button type="submit" class="btn btn-primary">Deploy Node</button>
                 </div>
             </form>
         </div>

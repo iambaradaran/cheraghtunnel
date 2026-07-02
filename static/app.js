@@ -222,7 +222,7 @@ async function loadTunnels() {
                             ${t.status === 'active' ? 'Stop' : 'Start'}
                         </button>
                         <button class="btn btn-secondary" onclick="showDeployModal(${t.id})">SSH Deploy</button>
-                        <button class="btn btn-secondary" onclick="showAgentCommand(${t.id})">Agent Cmd</button>
+                        <button class="btn btn-secondary" onclick="showNodeCommand(${t.id})">Node Cmd</button>
                         <button class="btn btn-secondary btn-danger" style="background: rgba(255,51,102,0.15); color: #ff3366;" onclick="deleteTunnel(${t.id})">Delete</button>
                     </div>
                 </td>
@@ -284,11 +284,11 @@ async function deleteTunnel(id) {
     }
 }
 
-function showAgentCommand(id) {
+function showNodeCommand(id) {
     const host = window.location.host;
-    const cmd = `curl -sSf http://${host}/api/tunnels/${id}/agent-script | bash`;
+    const cmd = `curl -sSf http://${host}/api/tunnels/${id}/node-script | bash`;
     
-    document.getElementById('agent-command-text').innerText = cmd;
+    document.getElementById('node-command-text').innerText = cmd;
     
     const copyBtn = document.getElementById('copy-cmd-btn');
     copyBtn.innerText = 'Copy Command';
@@ -316,5 +316,5 @@ function authHeaders() {
 
 window.toggleTunnel = toggleTunnel;
 window.deleteTunnel = deleteTunnel;
-window.showAgentCommand = showAgentCommand;
+window.showNodeCommand = showNodeCommand;
 window.showDeployModal = showDeployModal;

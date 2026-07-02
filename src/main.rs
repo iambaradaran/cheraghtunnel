@@ -28,7 +28,7 @@ enum Commands {
     },
     /// Start the tunnel server listener (Iran server)
     Server {
-        /// Control port to listen on for client agents
+        /// Control port to listen on for client nodes
         #[arg(short, long)]
         control_port: u16,
 
@@ -48,7 +48,7 @@ enum Commands {
         #[arg(long)]
         decoy: Option<String>,
     },
-    /// Start the tunnel client agent (Kharej server)
+    /// Start the tunnel client node (Kharej server)
     Client {
         /// Iran server IP or hostname
         #[arg(short, long)]

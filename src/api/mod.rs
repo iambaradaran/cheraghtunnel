@@ -83,8 +83,8 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
         .route("/style.css", get(static_handler))
         .route("/app.js", get(static_handler))
         .route("/api/auth/login", post(login_handler))
-        // Agent script is fetched by curl from remote servers, so it stays public
-        .route("/api/tunnels/:id/agent-script", get(agent_script_handler));
+        // Node script is fetched by curl from remote servers, so it stays public
+        .route("/api/tunnels/:id/node-script", get(node_script_handler));
 
     // Protected routes (require auth token)
     let protected_routes = Router::new()
@@ -279,7 +279,7 @@ async fn toggle_tunnel_handler(
     }
 }
 
-// SSH Agent Deployer Handler
+// SSH Node Deployer Handler
 #[derive(Deserialize)]
 struct DeployRequest {
     host: String,
@@ -308,8 +308,8 @@ async fn deploy_tunnel_handler(
     tokio::spawn(async move {
         println!("[DEPLOY] Initiating SSH deployment on {}@{}...", payload.username, payload.host);
         
-        let agent_url = format!("http://{}/api/tunnels/{}/agent-script", payload.panel_host, id);
-        let remote_cmd = format!("curl -sSf {} | bash", agent_url);
+        let node_url = format!("http://{}/api/tunnels/{}/node-script", payload.panel_host, id);
+        let remote_cmd = format!("curl -sSf {} | bash", node_url);
         
         let password_str = payload.password.unwrap_or_default();
         let result = tokio::process::Command::new("sshpass")
@@ -345,8 +345,8 @@ async fn deploy_tunnel_handler(
     (StatusCode::OK, Json("Deployment started in background")).into_response()
 }
 
-// Generate Kharej Server Agent Installer Script
-async fn agent_script_handler(
+// Generate Kharej Server Node Installer Script
+async fn node_script_handler(
     Extension(state): Extension<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
     headers: HeaderMap,
@@ -376,7 +376,7 @@ async fn agent_script_handler(
 
     let script = format!(
         r#"#!/bin/bash
-# CheraghTunnel Agent Installer Script
+# CheraghTunnel Node Installer Script
 set -e
 
 IRAN_IP="{}"
@@ -388,31 +388,63 @@ PROTOCOL="{}"
 TUNNEL_ID="{}"
 
 echo "=================================================="
-echo "  Installing CheraghTunnel Client Agent..."
+echo "  Installing CheraghTunnel Client Node..."
 echo "  Target Server: $IRAN_IP:$CONTROL_PORT"
 echo "  Forwarding Public Port: $PUBLIC_PORT -> Local: $LOCAL_PORT"
 echo "=================================================="
-
-# Install Rust toolchain if not present
-if ! command -v cargo &> /dev/null; then
-    echo "Installing Rust compilation toolchain..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source $HOME/.cargo/env
-fi
 
 # Setup working directories
 mkdir -p /etc/cheraghtunnel
 mkdir -p /tmp/cheraghtunnel
 
+# Attempt to download pre-compiled release binary to save time (5 seconds vs 15 minutes)
+echo "Attempting to download pre-compiled CheraghTunnel release binary..."
+DOWNLOAD_SUCCESS=false
+if curl -sSfL -o /usr/local/bin/cheraghtunnel "https://github.com/iambaradaran/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64"; then
+    chmod +x /usr/local/bin/cheraghtunnel
+    echo "Successfully downloaded pre-compiled binary! Skipping Rust compilation."
+    DOWNLOAD_SUCCESS=true
+else
+    echo "Pre-compiled release binary not found or download failed. Falling back to compilation from source..."
+fi
+
+if [ "$DOWNLOAD_SUCCESS" = false ]; then
+    # Install dependencies for compilation
+    echo "Installing system package dependencies for compilation..."
+    apt-get update && apt-get install -y build-essential sqlite3 curl git sshpass || true
+
+    # Install Rust toolchain if not present
+    if ! command -v cargo &> /dev/null; then
+        echo "Installing Rust compilation toolchain..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        source $HOME/.cargo/env
+    fi
+
+    echo "Cloning and compiling CheraghTunnel from source..."
+    rm -rf /tmp/cheraghtunnel-source
+    git clone https://github.com/iambaradaran/cheraghtunnel.git /tmp/cheraghtunnel-source
+    cd /tmp/cheraghtunnel-source
+    source $HOME/.cargo/env 2>/dev/null || . $HOME/.cargo/env 2>/dev/null || true
+    cargo build --release
+    cp target/release/cheraghtunnel /usr/local/bin/cheraghtunnel
+    chmod +x /usr/local/bin/cheraghtunnel
+    cd - > /dev/null
+    rm -rf /tmp/cheraghtunnel-source
+else
+    # Install lightweight runtime dependencies only
+    echo "Installing runtime dependencies..."
+    apt-get update && apt-get install -y sqlite3 curl sshpass || true
+fi
+
 # Setup systemd daemon
-cat <<EOF > /etc/systemd/system/cheragh-client-$TUNNEL_ID.service
+cat <<EOF > /etc/systemd/system/cheragh-node-$id.service
 [Unit]
-Description=CheraghTunnel Client Agent - $PROTOCOL ($TUNNEL_ID)
+Description=CheraghTunnel Client Node - $PROTOCOL ($id)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/cheraghtunnel client -s $IRAN_IP -c $CONTROL_PORT -p $PUBLIC_PORT -l 127.0.0.1:$LOCAL_PORT -t $TOKEN --protocol $PROTOCOL --tunnel-id $TUNNEL_ID
+ExecStart=/usr/local/bin/cheraghtunnel client -s $IRAN_IP -c $control_port -p $public_port -l 127.0.0.1:$kharej_port -t $token --protocol $protocol --tunnel-id $id
 Restart=always
 User=root
 
@@ -421,10 +453,9 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable cheragh-client-$TUNNEL_ID
+systemctl enable cheragh-node-$id
+systemctl start cheragh-node-$id
 echo "Setup completed successfully!"
-echo "Copy cheraghtunnel binary to /usr/local/bin/cheraghtunnel and run:"
-echo "systemctl start cheragh-client-$TUNNEL_ID"
 "#,
         ips, tunnel.control_port, tunnel.iran_port, tunnel.kharej_port, tunnel.token, tunnel.protocol, id
     );
@@ -433,7 +464,7 @@ echo "systemctl start cheragh-client-$TUNNEL_ID"
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "application/x-sh"),
-            (header::CONTENT_DISPOSITION, "attachment; filename=\"agent.sh\""),
+            (header::CONTENT_DISPOSITION, "attachment; filename=\"node.sh\""),
         ],
         script,
     ).into_response()
