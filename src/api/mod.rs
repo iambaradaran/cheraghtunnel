@@ -209,6 +209,20 @@ async fn create_tunnel_handler(
     Extension(state): Extension<Arc<AppState>>,
     Json(payload): Json<Tunnel>,
 ) -> impl IntoResponse {
+    match db::get_tunnels(&state.db_path) {
+        Ok(tunnels) => {
+            for t in tunnels {
+                if t.iran_port == payload.iran_port {
+                    return (StatusCode::BAD_REQUEST, "Public port is already in use by another tunnel").into_response();
+                }
+                if t.control_port == payload.control_port {
+                    return (StatusCode::BAD_REQUEST, "Control port is already in use by another tunnel").into_response();
+                }
+            }
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+
     match db::create_tunnel(&state.db_path, &payload) {
         Ok(id) => (StatusCode::CREATED, Json(id)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -247,6 +261,22 @@ async fn update_tunnel_handler(
     axum::extract::Path(id): axum::extract::Path<i64>,
     Json(payload): Json<Tunnel>,
 ) -> impl IntoResponse {
+    match db::get_tunnels(&state.db_path) {
+        Ok(tunnels) => {
+            for t in tunnels {
+                if t.id != Some(id) {
+                    if t.iran_port == payload.iran_port {
+                        return (StatusCode::BAD_REQUEST, "Public port is already in use by another tunnel").into_response();
+                    }
+                    if t.control_port == payload.control_port {
+                        return (StatusCode::BAD_REQUEST, "Control port is already in use by another tunnel").into_response();
+                    }
+                }
+            }
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+
     let mut servers = state.active_servers.lock().await;
     let was_active = servers.contains_key(&id);
     if was_active {
