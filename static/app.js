@@ -90,16 +90,15 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         try {
-            const res = await fetch('/api/tunnels', {
+            const res = await apiFetch('/api/tunnels', {
                 method: 'POST',
-                headers: authHeaders(),
                 body: JSON.stringify(payload)
             });
-            if (res.ok) {
+            if (res && res.ok) {
                 createModal.style.display = 'none';
                 createForm.reset();
                 loadTunnels();
-            } else {
+            } else if (res) {
                 alert("Failed to create tunnel config");
             }
         } catch (err) {
@@ -135,12 +134,11 @@ document.addEventListener('DOMContentLoaded', () => {
         alert("SSH Auto-Deployment task initiated in background. Check tunnel status shortly!");
 
         try {
-            const res = await fetch(`/api/tunnels/${id}/deploy`, {
+            const res = await apiFetch(`/api/tunnels/${id}/deploy`, {
                 method: 'POST',
-                headers: authHeaders(),
                 body: JSON.stringify(payload)
             });
-            if (res.ok) {
+            if (res && res.ok) {
                 loadTunnels();
             }
         } catch (err) {
@@ -183,8 +181,8 @@ function formatSpeed(bytesPerSec) {
 
 async function loadTunnels() {
     try {
-        const res = await fetch('/api/tunnels', { headers: authHeaders() });
-        if (!res.ok) return;
+        const res = await apiFetch('/api/tunnels');
+        if (!res || !res.ok) return;
         const tunnels = await res.json();
         
         const body = document.getElementById('tunnels-body');
@@ -238,8 +236,8 @@ async function loadTunnels() {
 
 async function loadStats() {
     try {
-        const res = await fetch('/api/stats', { headers: authHeaders() });
-        if (!res.ok) return;
+        const res = await apiFetch('/api/stats');
+        if (!res || !res.ok) return;
         const stats = await res.json();
         
         // Update CPU Circular Ring
@@ -263,8 +261,8 @@ async function loadStats() {
 
 async function toggleTunnel(id) {
     try {
-        const res = await fetch(`/api/tunnels/${id}/toggle`, { method: 'POST', headers: authHeaders() });
-        if (res.ok) {
+        const res = await apiFetch(`/api/tunnels/${id}/toggle`, { method: 'POST' });
+        if (res && res.ok) {
             loadTunnels();
         }
     } catch (err) {
@@ -275,8 +273,8 @@ async function toggleTunnel(id) {
 async function deleteTunnel(id) {
     if (!confirm("Are you sure you want to delete this tunnel configuration?")) return;
     try {
-        const res = await fetch(`/api/tunnels/${id}`, { method: 'DELETE', headers: authHeaders() });
-        if (res.ok) {
+        const res = await apiFetch(`/api/tunnels/${id}`, { method: 'DELETE' });
+        if (res && res.ok) {
             loadTunnels();
         }
     } catch (err) {
@@ -312,6 +310,24 @@ function authHeaders() {
         'Content-Type': 'application/json',
         'Authorization': token ? `Bearer ${token}` : ''
     };
+}
+
+// Wrapper for API calls to handle 401 logouts gracefully
+async function apiFetch(url, options = {}) {
+    const headers = authHeaders();
+    options.headers = { ...headers, ...options.headers };
+    try {
+        const res = await fetch(url, options);
+        if (res.status === 401) {
+            localStorage.removeItem('cheragh_session');
+            window.location.reload();
+            return null;
+        }
+        return res;
+    } catch (err) {
+        console.error("API Fetch Error:", err);
+        return null;
+    }
 }
 
 window.toggleTunnel = toggleTunnel;
