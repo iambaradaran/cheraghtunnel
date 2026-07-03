@@ -10,6 +10,8 @@ use tokio::sync::mpsc;
 use crate::tunnel::multiplex::{connect_to_local, pipe_streams_monitored};
 use crate::tunnel::transport::{TransportStream, server_handshake, client_handshake};
 use crate::tunnel::transport::udp::{UdpVirtualStream, UdpMultiplexer, UdpMode};
+use tokio_util::compat::{TokioAsyncReadCompatExt, FuturesAsyncReadCompatExt};
+use futures::StreamExt;
 
 struct LoopGuard {
     handle: Option<tokio::task::JoinHandle<()>>,
@@ -23,11 +25,6 @@ impl Drop for LoopGuard {
     }
 }
 
-async fn relay_control_channel(mut control: TransportStream, peer: TcpStream, tunnel_id: i64) {
-    let _ = control.write_u8(1).await;
-    let _ = control.flush().await;
-    let _ = pipe_streams_monitored(peer, control, tunnel_id).await;
-}
 
 fn is_udp_protocol(protocol: &str) -> bool {
     matches!(protocol, "flash" | "ray" | "lantern" | "halo" | "hysteria")
@@ -159,34 +156,69 @@ pub async fn run_server(
         })),
     };
 
-    // Main loop: accept public user connections and pair each with a queued control socket
+    // Main loop: accept public user connections and pair each with a yamux logical stream
+    let mut current_yamux: Option<yamux::Control> = None;
+    let mut yamux_task: Option<tokio::task::JoinHandle<()>> = None;
+
     while let Ok((user_socket, user_addr)) = public_listener.accept().await {
         let _ = crate::common::network::optimize_socket(&user_socket);
-        println!("[SERVER] User connected from {} to public port, waiting for control socket...", user_addr);
+        // println!("[SERVER] User connected from {} to public port", user_addr);
 
-        // Wait for an authenticated control stream from the channel with a timeout
-        let control_socket = match tokio::time::timeout(
-            tokio::time::Duration::from_secs(10),
-            control_rx.recv(),
-        )
-        .await
-        {
-            Ok(Some(cs)) => cs,
-            Ok(None) => {
-                eprintln!("[SERVER] Control channel closed, no more client nodes available");
-                break;
+        let mut stream_result = None;
+        if let Some(mut ctrl) = current_yamux.take() {
+            match ctrl.open_stream().await {
+                Ok(s) => {
+                    stream_result = Some(s);
+                    current_yamux = Some(ctrl);
+                }
+                Err(_) => {
+                    if let Some(t) = yamux_task.take() {
+                        t.abort();
+                    }
+                }
             }
-            Err(_) => {
-                eprintln!("[SERVER] Timeout waiting for control socket, dropping user connection from {}", user_addr);
-                continue;
-            }
-        };
+        }
 
-        // Spawn relay in a separate task so we can immediately accept the next user
-        let tid = tunnel_id;
-        tokio::spawn(async move {
-            relay_control_channel(control_socket, user_socket, tid).await;
-        });
+        if stream_result.is_none() {
+            match control_rx.recv().await {
+                Some(control_socket) => {
+                    println!("[SERVER] Establishing new Yamux session with client node...");
+                    let mut cfg = yamux::Config::default();
+                    cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
+                    cfg.set_max_buffer_size(1024 * 1024 * 4);
+                    
+                    let conn = yamux::Connection::new(control_socket.compat(), cfg, yamux::Mode::Client);
+                    let mut ctrl = conn.control();
+                    
+                    yamux_task = Some(tokio::spawn(async move {
+                        let stream = Box::pin(yamux::into_stream(conn));
+                        let _ = stream.for_each(|_| futures::future::ready(())).await;
+                    }));
+                    
+                    match ctrl.open_stream().await {
+                        Ok(s) => {
+                            current_yamux = Some(ctrl);
+                            stream_result = Some(s);
+                        }
+                        Err(e) => {
+                            eprintln!("[SERVER] Failed to open stream on new yamux: {}", e);
+                            continue;
+                        }
+                    }
+                }
+                None => {
+                    eprintln!("[SERVER] Control channel closed, no more client nodes available");
+                    break;
+                }
+            }
+        }
+
+        if let Some(stream) = stream_result {
+            let tid = tunnel_id;
+            tokio::spawn(async move {
+                pipe_streams_monitored(stream.compat(), user_socket, tid).await;
+            });
+        }
     }
 
     Ok(())
@@ -347,56 +379,34 @@ pub async fn run_client(
         };
 
         println!("[CLIENT] Handshake succeeded over '{}'", protocol);
-        println!("[CLIENT] Waiting for tunnel relay signal...");
+        println!("[CLIENT] Establishing Yamux Multiplexer Session...");
 
-        let signal = match control_socket.read_u8().await {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("[CLIENT] Failed to read relay signal: {}", e);
-                ip_index += 1;
-                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                continue;
+        let mut cfg = yamux::Config::default();
+        cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
+        cfg.set_max_buffer_size(1024 * 1024 * 4);
+        let conn = yamux::Connection::new(control_socket.compat(), cfg, yamux::Mode::Server);
+        let mut incoming = Box::pin(yamux::into_stream(conn));
+
+        while let Some(stream_res) = incoming.next().await {
+            match stream_res {
+                Ok(stream) => {
+                    let local_service = local_service.to_string();
+                    let tid = tunnel_id;
+                    tokio::spawn(async move {
+                        if let Ok(local_conn) = connect_to_local(&local_service).await {
+                            let _ = crate::common::network::optimize_socket(&local_conn);
+                            pipe_streams_monitored(stream.compat(), local_conn, tid).await;
+                        }
+                    });
+                }
+                Err(e) => {
+                    eprintln!("[CLIENT] Yamux connection error: {}", e);
+                    break;
+                }
             }
-        };
-
-        if signal != 1 {
-            eprintln!("[CLIENT] Unexpected relay signal byte: {}", signal);
-            ip_index += 1;
-            continue;
         }
 
-        println!(
-            "[CLIENT] Relay signal received, connecting to local service: {}...",
-            local_service
-        );
-
-        let local_conn = match connect_to_local(local_service).await {
-            Ok(s) => {
-                let _ = crate::common::network::optimize_socket(&s);
-                s
-            }
-            Err(e) => {
-                eprintln!(
-                    "[CLIENT] Failed to connect to local service ({}): {}",
-                    local_service, e
-                );
-                ip_index += 1;
-                continue;
-            }
-        };
-
-        // Spawn relay in a separate task so we can immediately reconnect
-        // to the server for the next user connection, enabling true concurrency.
-        let tid = tunnel_id;
-        tokio::spawn(async move {
-            pipe_streams_monitored(control_socket, local_conn, tid).await;
-            println!("[CLIENT] Relay task finished for tunnel_id={}", tid);
-        });
-
-        // Reset ip_index on success (we got a valid connection from this IP)
         ip_index = 0;
-
-        // Immediately loop back to connect a new control socket for the next user
-        println!("[CLIENT] Relay spawned, reconnecting for next user...");
+        println!("[CLIENT] Yamux session ended. Reconnecting...");
     }
 }
