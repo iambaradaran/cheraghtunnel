@@ -131,6 +131,7 @@ pub async fn run_server(
                 loop {
                     match control_listener.accept().await {
                         Ok((control_socket, addr)) => {
+                            let _ = crate::common::network::optimize_socket(&control_socket);
                             let token_clone = token_owned.clone();
                             let proto_clone = protocol_owned.clone();
                             let decoy_clone = decoy_owned.clone();
