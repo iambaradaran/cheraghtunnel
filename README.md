@@ -4,8 +4,8 @@
 
 **سامانه مدیریت تونل معکوس با عملکرد بالا — نوشته‌شده با Rust**
 
-[![GitHub Release](https://img.shields.io/github/v/release/iambaradaran/cheraghtunnel?style=for-the-badge&logo=github&color=f59e0b)](https://github.com/iambaradaran/cheraghtunnel/releases/latest)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/iambaradaran/cheraghtunnel/release.yml?style=for-the-badge&logo=github-actions&label=CI)](https://github.com/iambaradaran/cheraghtunnel/actions)
+[![GitHub Release](https://img.shields.io/github/v/release/iam4lucard/cheraghtunnel?style=for-the-badge&logo=github&color=f59e0b)](https://github.com/iam4lucard/cheraghtunnel/releases/latest)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/iam4lucard/cheraghtunnel/release.yml?style=for-the-badge&logo=github-actions&label=CI)](https://github.com/iam4lucard/cheraghtunnel/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 [![Lines of Code](https://img.shields.io/badge/LOC-3.5K-green?style=for-the-badge)]()
@@ -126,7 +126,7 @@
 روی سرور ایران به عنوان `root` اجرا کنید:
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/iambaradaran/cheraghtunnel/main/install.sh | bash
+curl -sSf https://raw.githubusercontent.com/iam4lucard/cheraghtunnel/main/install.sh | bash
 ```
 
 اسکریپت نصب به صورت تعاملی موارد زیر را از شما می‌پرسد:
@@ -142,12 +142,12 @@ curl -sSf https://raw.githubusercontent.com/iambaradaran/cheraghtunnel/main/inst
 ```bash
 # Linux (amd64)
 curl -sSfL -o /usr/local/bin/cheraghtunnel \
-  https://github.com/iambaradaran/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64
+  https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64
 chmod +x /usr/local/bin/cheraghtunnel
 
 # macOS (Apple Silicon)
 curl -sSfL -o /usr/local/bin/cheraghtunnel \
-  https://github.com/iambaradaran/cheraghtunnel/releases/latest/download/cheraghtunnel-macos-arm64
+  https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-macos-arm64
 chmod +x /usr/local/bin/cheraghtunnel
 ```
 
@@ -219,7 +219,7 @@ cheraghtunnel client \
 
 ```bash
 # کلون پروژه
-git clone https://github.com/iambaradaran/cheraghtunnel.git
+git clone https://github.com/iam4lucard/cheraghtunnel.git
 cd cheraghtunnel
 
 # کامپایل نسخه ریلیز
@@ -302,6 +302,6 @@ git push origin feature/my-feature
 
 **ساخته‌شده با ❤️ و Rust**
 
-[🐛 گزارش باگ](https://github.com/iambaradaran/cheraghtunnel/issues) &nbsp;•&nbsp; [💡 پیشنهاد ویژگی](https://github.com/iambaradaran/cheraghtunnel/issues) &nbsp;•&nbsp; [📦 آخرین نسخه](https://github.com/iambaradaran/cheraghtunnel/releases/latest)
+[🐛 گزارش باگ](https://github.com/iam4lucard/cheraghtunnel/issues) &nbsp;•&nbsp; [💡 پیشنهاد ویژگی](https://github.com/iam4lucard/cheraghtunnel/issues) &nbsp;•&nbsp; [📦 آخرین نسخه](https://github.com/iam4lucard/cheraghtunnel/releases/latest)
 
 </div>
