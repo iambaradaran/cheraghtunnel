@@ -30,12 +30,13 @@ async fn relay_control_channel(mut control: TransportStream, peer: TcpStream, tu
 }
 
 fn is_udp_protocol(protocol: &str) -> bool {
-    matches!(protocol, "flash" | "ray" | "lantern" | "halo" | "hysteria")
+    matches!(protocol, "flash" | "ray" | "photon" | "lantern" | "halo" | "hysteria")
 }
 
 fn get_udp_mode(protocol: &str) -> UdpMode {
     match protocol {
         "ray" => UdpMode::Ray,
+        "photon" => UdpMode::Photon,
         "lantern" => UdpMode::Lantern,
         "halo" => UdpMode::Halo,
         "hysteria" => UdpMode::Hysteria,
@@ -134,24 +135,19 @@ pub async fn run_server(
                 loop {
                     match control_listener.accept().await {
                         Ok((control_socket, addr)) => {
-                            println!("[SERVER] Client node connected from: {}", addr);
-
                             let token_clone = token_owned.clone();
                             let proto_clone = protocol_owned.clone();
                             let decoy_clone = decoy_owned.clone();
                             let control_tx_clone = control_tx.clone();
 
                             tokio::spawn(async move {
-                                match server_handshake(control_socket, &proto_clone, &token_clone, decoy_clone).await {
-                                    Ok(s) => {
-                                        if control_tx_clone.send(s).await.is_err() {
-                                            eprintln!("[SERVER] Control channel closed, dropping node stream");
-                                        }
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[SERVER] Handshake failed: {}", e);
+                                if let Ok(s) = server_handshake(control_socket, &proto_clone, &token_clone, decoy_clone).await {
+                                    println!("[SERVER] Authentic client connected from: {}", addr);
+                                    if control_tx_clone.send(s).await.is_err() {
+                                        eprintln!("[SERVER] Control channel closed, dropping node stream");
                                     }
                                 }
+                                // Ignore handshake errors (scanners/bots)
                             });
                         }
                         Err(e) => {
