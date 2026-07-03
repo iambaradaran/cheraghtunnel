@@ -1,88 +1,307 @@
-# 🕯️ چراغ‌تونل (CheraghTunnel)
+<div align="center">
 
-**چراغ‌تونل** یک سیستم جامع مدیریت تانل معکوس (Reverse Tunnel) سرور به سرور، به همراه هسته کلاینت و پنل مدیریتی تحت وب است که به زبان **Rust** به صورت یک باینری فوق‌العاده سبک، سریع و یکپارچه (Single Static Binary) کامپایل شده است. 
+# 🕯️ CheraghTunnel
 
-این پروژه به عنوان یک ابزار متن‌باز، امن و با بازدهی بالا طراحی شده تا جایگزینی قدرتمند برای اسکریپت‌های تجاری و سنگین باشد. تمام رابط کاربری شیشه‌ای (Glassmorphic) و هسته دیتابیس بومی (SQLite) درون فایل باینری نهایی جاسازی شده‌اند و کل برنامه در زمان اجرا کمتر از **۱۵ مگابایت رم** مصرف می‌کند.
+**سامانه مدیریت تونل معکوس با عملکرد بالا — نوشته‌شده با Rust**
 
----
+[![GitHub Release](https://img.shields.io/github/v/release/iambaradaran/cheraghtunnel?style=for-the-badge&logo=github&color=f59e0b)](https://github.com/iambaradaran/cheraghtunnel/releases/latest)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/iambaradaran/cheraghtunnel/release.yml?style=for-the-badge&logo=github-actions&label=CI)](https://github.com/iambaradaran/cheraghtunnel/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.75+-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
+[![Lines of Code](https://img.shields.io/badge/LOC-3.5K-green?style=for-the-badge)]()
 
-## ✨ ویژگی‌های برجسته پروژه
+<br/>
 
-* **🚀 ۱۱ پروفایل انتقال نوری خلاقانه (Transports):**
-  * `Beam` (tcpmux): ارتباط ساده و پرسرعت بر پایه TCP موازی.
-  * `Aura` (httpmux): شبیه‌سازی ترافیک معمولی وب (HTTP/1.1).
-  * `Nova` (httpsmux): انتقال امن با لایه حفاظتی رمزنگاری کامل HTTPS + TLS.
-  * `Glimmer` (wsmux): بستر انتقال وب‌سوکت ساده (WebSocket).
-  * `Beacon` (wssmux): وب‌سوکت امن با TLS برای سازگاری کامل با کلودفلر و CDNها.
-  * `Flash` (kcpmux): پروتکل سرعت بالا بر پایه KCP UDP برای دور زدن محدودیت‌ها.
-  * `Ray` (rawmux): ارتباط مستقیم KCP/UDP با کمترین اورهد (Overhead).
-  * `Photon` (quantummux): تلفیق Raw TCP + KCP + FEC ویژه گیمینگ (کاهش پینگ بدون نیاز به UDP).
-  * `Lantern` (tunmux): تانل شبکه سطح لایه ۲/۳ بر پایه اینترفیس مجازی TUN.
-  * `Mirage` (realitymux): جعل گواهینامه Reality TLS (تغییر الگو به سایت‌های معروفی مانند مایکروسافت).
-  * `Halo` (webrtcmux): شبیه‌سازی ترافیک تماس تصویری (WebRTC DataChannel).
+**چراغ‌تونل** یک سامانه یکپارچه و متن‌باز برای مدیریت تونل معکوس سرور به سرور است که شامل هسته کلاینت، سرور و پنل مدیریت تحت وب می‌شود. کل پروژه به زبان **Rust** نوشته شده و به صورت یک **باینری استاتیک واحد** (Single Static Binary) کامپایل می‌شود.
 
-* **🛡️ پدافند غیرعامل در برابر فیلترچی (Active-Probing Defense):**
-  * مجهز به وب‌سرور فریبنده (Decoy Server). اگر ربات‌های فیلترچی پورت تانل را اسکن کنند، سیستم به طور خودکار به آن‌ها پاسخ ریدایرکت (HTTP 302) به دامنه‌های دیگر می‌دهد یا صفحه ساختگی نمایش می‌دهد تا هویت تانل فاش نشود.
+تمام رابط کاربری گلس‌مورفیک (Glassmorphism)، دیتابیس بومی SQLite و ۱۱ پروتکل انتقال درون باینری نهایی جاسازی شده‌اند.
 
-* **🔗 سوئیچ خودکار مسیر (Multi-Path Failover):**
-  * امکان معرفی چندین آی‌پی یا دامنه ایران به عامل کلاینت خارج. در صورت مسدود شدن یا قطع ارتباط با یک سرور، کلاینت در کسری از ثانیه روی مسیرهای پشتیبان سوئیچ می‌کند.
+<br/>
 
-* **⚙️ راه‌اندازی و نصب آسان با SSH خودکار (SSH Node Deployer):**
-  * بدون نیاز به کپی‌پیست دستورات دستی؛ کافی‌ست مشخصات SSH سرور خارج را در پنل وب وارد کنید تا چراغ‌تونل به صورت خودکار تمام پیش‌نیازها را پیکربندی کرده و کلاینت را به عنوان سرویس سیستمی (`systemd`) در کمتر از ۵ ثانیه راه‌اندازی کند.
+**`< 15 MB RAM`** &nbsp;•&nbsp; **`< 7 MB Binary`** &nbsp;•&nbsp; **`Zero Dependencies`** &nbsp;•&nbsp; **`Single Binary`**
 
-* **📈 مانیتورینگ زنده ترافیک و سرعت (Live Bandwidth Meter):**
-  * محاسبه لحظه‌ای پهنای باند و سرعت دانلود/آپلود تانل‌ها بدون ایجاد اورهد روی دیتابیس (با استفاده از رجیستری بومی متغیرهای اتمیک در حافظه).
+</div>
 
 ---
 
-## 🖥️ تصاویری از پنل مدیریت چراغ‌تونل
+## 📑 فهرست مطالب
 
-* **طراحی Glassmorphism شیشه‌ای مدرن:** پنل به طور کامل واکنش‌گرا و با استایل نئونی و گرافی شفاف طراحی شده است.
-* **دیاگرام گرافیکی جریان شبکه (Topology Flow):** نمایش گام‌به‌گام اتصال کاربر -> سرور ایران -> سرور خارج -> هسته وی‌پی‌ان به صورت زنده.
-* **نمودارهای وضعیت سیستم:** مانیتور زنده منابع سرور (CPU/RAM).
+- [معماری](#-معماری)
+- [ویژگی‌های کلیدی](#-ویژگیهای-کلیدی)
+- [پروفایل‌های انتقال](#-پروفایلهای-انتقال-transports)
+- [نصب سریع](#-نصب-سریع)
+- [استفاده](#-استفاده)
+- [امنیت](#-امنیت)
+- [توسعه](#-توسعه)
+- [مشارکت](#-مشارکت)
+- [لایسنس](#-لایسنس)
 
 ---
 
-## 🛠️ راهنمای راه‌اندازی سریع
+## 🏗 معماری
 
-### ۱. نصب خودکار پنل (روی سرور ایران)
-دستور زیر را به عنوان کاربر ریشه (root) در سرور ایران خود اجرا کنید:
+<div align="center">
+
+```
+                         ┌─────────────────────────────────────────┐
+                         │           سرور ایران (Iran)              │
+                         │                                         │
+  ┌──────────┐           │  ┌────────────┐      ┌──────────────┐   │           ┌──────────────┐
+  │  کاربر   │──:443────▶│  │ Public Port │─────▶│ Control Port │───│──────────▶│  سرور خارج   │
+  │  (User)  │           │  │  Listener  │      │   Channel    │   │           │  (Kharej)    │
+  └──────────┘           │  └────────────┘      └──────────────┘   │           │              │
+                         │         │                    │          │           │  ┌────────┐  │
+                         │         ▼                    ▼          │           │  │ :443   │  │
+                         │  ┌─────────────────────────────────┐    │           │  │ Xray/  │  │
+                         │  │   Relay Engine (tokio::select)  │    │           │  │ WG/..  │  │
+                         │  │   + Traffic Monitor (Atomic)    │    │           │  └────────┘  │
+                         │  └─────────────────────────────────┘    │           └──────────────┘
+                         │                                         │
+                         │  ┌─────────────────────────────────┐    │
+                         │  │   Web Panel (:8000)              │    │
+                         │  │   • Glassmorphic UI              │    │
+                         │  │   • SQLite (embedded)            │    │
+                         │  │   • SSH Auto-Deployer            │    │
+                         │  │   • Live Bandwidth Meter         │    │
+                         │  └─────────────────────────────────┘    │
+                         └─────────────────────────────────────────┘
+```
+
+</div>
+
+**جریان داده:**
+
+1. **کاربر** به پورت عمومی سرور ایران (مثلاً `:443`) متصل می‌شود
+2. **موتور ریلی** اتصال را از طریق کانال کنترل احراز‌هویت‌شده به سرور خارج هدایت می‌کند
+3. **سرور خارج** ترافیک را به سرویس محلی (Xray, WireGuard, ...) تحویل می‌دهد
+4. تمامی بایت‌ها به صورت **اتمیک** شمارش شده و به صورت **لحظه‌ای** در پنل نمایش داده می‌شوند
+
+---
+
+## ✨ ویژگی‌های کلیدی
+
+| ویژگی | توضیحات |
+|:---:|:---|
+| 🚀 **۱۱ پروتکل انتقال** | از TCP ساده تا WebRTC و Reality TLS — انتخاب بهینه بر اساس شرایط شبکه |
+| 🛡️ **پدافند غیرعامل** | وب‌سرور فریبنده (Decoy) در برابر اسکن ربات‌ها — ارسال صفحه ساختگی یا ریدایرکت |
+| 🔗 **Multi-Path Failover** | سوئیچ خودکار بین چندین IP/دامنه ایران در کسری از ثانیه |
+| ⚙️ **SSH Auto-Deploy** | نصب خودکار کلاینت روی سرور خارج فقط با وارد کردن مشخصات SSH |
+| 📈 **مانیتور زنده** | نمایش لحظه‌ای سرعت DL/UL و مصرف CPU/RAM بدون اورهد |
+| 🎨 **پنل Glassmorphic** | رابط کاربری مدرن و واکنش‌گرا با دیاگرام توپولوژی شبکه |
+| 🔒 **امنیت لایه‌ای** | هش SHA-256، مقایسه زمان‌ثابت، Rate Limiting، توکن نشست تصادفی |
+| 📦 **باینری واحد** | بدون وابستگی خارجی — فقط یک فایل اجرایی |
+| 🪶 **فوق‌العاده سبک** | مصرف کمتر از ۱۵ مگابایت رم در زمان اجرا |
+
+---
+
+## 🔌 پروفایل‌های انتقال (Transports)
+
+<table>
+<tr>
+<th>پروفایل</th>
+<th>شناسه فنی</th>
+<th>لایه</th>
+<th>توضیحات</th>
+<th>بهترین کاربرد</th>
+</tr>
+<tr><td>🔵 <b>Beam</b></td><td><code>tcpmux</code></td><td>TCP</td><td>ارتباط ساده و پرسرعت TCP موازی</td><td>عمومی</td></tr>
+<tr><td>🟢 <b>Aura</b></td><td><code>httpmux</code></td><td>HTTP</td><td>شبیه‌سازی ترافیک معمولی وب HTTP/1.1</td><td>شبکه‌های محدود</td></tr>
+<tr><td>🟡 <b>Nova</b></td><td><code>httpsmux</code></td><td>HTTPS</td><td>انتقال رمزنگاری‌شده با TLS کامل</td><td>امنیت بالا</td></tr>
+<tr><td>🟣 <b>Glimmer</b></td><td><code>wsmux</code></td><td>WebSocket</td><td>بستر انتقال وب‌سوکت ساده</td><td>CDN / پروکسی</td></tr>
+<tr><td>🔴 <b>Beacon</b></td><td><code>wssmux</code></td><td>WSS</td><td>وب‌سوکت امن با TLS — سازگار با Cloudflare</td><td>CDN + امنیت</td></tr>
+<tr><td>⚡ <b>Flash</b></td><td><code>kcpmux</code></td><td>KCP/UDP</td><td>پروتکل سرعت بالا مبتنی بر UDP</td><td>گیمینگ</td></tr>
+<tr><td>🌊 <b>Ray</b></td><td><code>rawmux</code></td><td>Raw UDP</td><td>ارتباط مستقیم KCP با کمترین اورهد</td><td>کمترین تأخیر</td></tr>
+<tr><td>⚛️ <b>Photon</b></td><td><code>quantummux</code></td><td>TCP+FEC</td><td>ترکیب TCP و KCP با تصحیح خطا — بدون نیاز به UDP</td><td>گیمینگ بدون UDP</td></tr>
+<tr><td>🏮 <b>Lantern</b></td><td><code>tunmux</code></td><td>TUN L2/L3</td><td>تونل سطح شبکه با اینترفیس مجازی TUN</td><td>تونل کامل شبکه</td></tr>
+<tr><td>🌫️ <b>Mirage</b></td><td><code>realitymux</code></td><td>Reality TLS</td><td>جعل گواهینامه TLS سایت‌های معتبر (مثل مایکروسافت)</td><td>ضد تشخیص</td></tr>
+<tr><td>👼 <b>Halo</b></td><td><code>webrtcmux</code></td><td>WebRTC</td><td>شبیه‌سازی ترافیک تماس تصویری (DataChannel)</td><td>ضد DPI</td></tr>
+</table>
+
+---
+
+## 🚀 نصب سریع
+
+### نصب خودکار (توصیه‌شده)
+
+روی سرور ایران به عنوان `root` اجرا کنید:
 
 ```bash
 curl -sSf https://raw.githubusercontent.com/iambaradaran/cheraghtunnel/main/install.sh | bash
 ```
 
-در طول فرآیند نصب، اسکریپت به صورت تعاملی پارامترهای زیر را از شما می‌پرسد:
-* **پورت پنل وب:** پورت دلخواه برای دسترسی به پنل وب (پیش‌فرض: `8000`).
-* **نام کاربری ادمین:** نام کاربری دلخواه برای ورود به پنل (پیش‌فرض: `admin`).
-* **کلمه عبور ادمین:** کلمه عبور دلخواه برای ورود (در صورت فشردن Enter، یک کلمه عبور قوی و تصادفی برای شما ساخته می‌شود).
+اسکریپت نصب به صورت تعاملی موارد زیر را از شما می‌پرسد:
 
-پس از پایان نصب، مشخصات وارد شده به همراه لینک دسترسی پنل در ترمینال به شما نمایش داده خواهد شد.
+| پارامتر | توضیحات | پیش‌فرض |
+|:---:|:---|:---:|
+| پورت پنل | پورت دسترسی به پنل وب | `8000` |
+| نام کاربری | نام کاربری ادمین | `admin` |
+| کلمه عبور | رمز ورود (Enter = تصادفی) | تولید خودکار |
 
-### ۲. کامپایل و اجرای دستی (مخصوص توسعه‌دهندگان)
-برای کامپایل دستی پروژه، ابتدا باید پیش‌نیاز ابزار توسعه Rust را نصب داشته باشید:
+### دانلود باینری آماده
 
 ```bash
-# کامپایل نسخه نهایی ریلیز
-cargo build --release
+# Linux (amd64)
+curl -sSfL -o /usr/local/bin/cheraghtunnel \
+  https://github.com/iambaradaran/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64
+chmod +x /usr/local/bin/cheraghtunnel
+
+# macOS (Apple Silicon)
+curl -sSfL -o /usr/local/bin/cheraghtunnel \
+  https://github.com/iambaradaran/cheraghtunnel/releases/latest/download/cheraghtunnel-macos-arm64
+chmod +x /usr/local/bin/cheraghtunnel
 ```
 
-سپس از دستورات زیر برای راه‌اندازی بخش‌های مختلف استفاده کنید:
+---
+
+## 💻 استفاده
+
+### ۱. اجرای پنل مدیریتی وب
 
 ```bash
-# ۱. اجرای پنل مدیریتی وب
-./target/release/cheraghtunnel panel --port 8000 --db-path cheraghtunnel.db
+cheraghtunnel panel --port 8000 --db-path cheraghtunnel.db
+```
 
-# ۲. اجرای سرور روی ایران به صورت دستی
-./target/release/cheraghtunnel server --control-port 8090 --public-port 443 --token MYTOKEN --protocol beam --decoy https://www.microsoft.com
+سپس از مرورگر به آدرس `http://YOUR_IP:8000` مراجعه کنید.
 
-# ۳. اجرای کلاینت روی خارج به صورت دستی
-./target/release/cheraghtunnel client --server-ip 1.1.1.1,2.2.2.2 --control-port 8090 --public-port 443 --local-service 127.0.0.1:443 --token MYTOKEN --protocol beam --tunnel-id 1
+### ۲. اجرای سرور (ایران) به صورت CLI
+
+```bash
+cheraghtunnel server \
+  --control-port 8090 \
+  --public-port 443 \
+  --token YOUR_SECRET_TOKEN \
+  --protocol beam \
+  --decoy https://www.microsoft.com
+```
+
+### ۳. اجرای کلاینت (خارج) به صورت CLI
+
+```bash
+cheraghtunnel client \
+  --server-ip 1.1.1.1,2.2.2.2 \
+  --control-port 8090 \
+  --public-port 443 \
+  --local-service 127.0.0.1:443 \
+  --token YOUR_SECRET_TOKEN \
+  --protocol beam \
+  --tunnel-id 1
+```
+
+> 💡 **نکته:** با استفاده از پنل وب، می‌توانید تمام مراحل بالا را بدون خط فرمان و فقط از طریق رابط گرافیکی انجام دهید — شامل نصب خودکار کلاینت روی سرور خارج با SSH.
+
+---
+
+## 🔒 امنیت
+
+چراغ‌تونل با رویکرد **دفاع در عمق** (Defense in Depth) طراحی شده است:
+
+| لایه | مکانیزم | توضیحات |
+|:---:|:---|:---|
+| **احراز هویت** | توکن PSK + هدر سفارشی | هندشیک رمزنگاری‌شده بین کلاینت و سرور |
+| **هش رمز عبور** | SHA-256 | رمزهای ادمین هش‌شده در دیتابیس ذخیره می‌شوند |
+| **ضد حمله زمانی** | مقایسه زمان‌ثابت (Constant-Time) | تمام مقایسه‌های رمز، توکن و نام کاربری با XOR |
+| **Rate Limiting** | ۵ تلاش / ۶۰ ثانیه | محافظت از پنل ورود در برابر حملات Brute-Force |
+| **توکن نشست** | ۱۲۸ بیت تصادفی رمزنگاری | تولید با `rand::random` در هر ورود موفق |
+| **ضد اسکن (Decoy)** | HTTP 302 / صفحه ساختگی | پاسخ فریبنده به ربات‌های Active Probing |
+| **ضد Underflow** | `saturating_sub` | محافظت از Rate Limiter در برابر انحراف ساعت |
+| **ضد نشت اتصال** | Explicit `shutdown()` | بستن صریح هر دو طرف ریلی هنگام قطع یک سمت |
+
+---
+
+## 🛠 توسعه
+
+### پیش‌نیازها
+
+- [Rust](https://rustup.rs/) نسخه 1.75 یا بالاتر
+- SQLite (به صورت `bundled` در Cargo کامپایل می‌شود)
+
+### کامپایل از سورس
+
+```bash
+# کلون پروژه
+git clone https://github.com/iambaradaran/cheraghtunnel.git
+cd cheraghtunnel
+
+# کامپایل نسخه ریلیز
+cargo build --release
+
+# اجرا
+./target/release/cheraghtunnel panel --port 8000
+```
+
+### بررسی کیفیت کد
+
+```bash
+# بررسی lint ها
+cargo clippy
+
+# اجرای تست‌ها
+cargo test
+
+# بررسی فرمت کد
+cargo fmt --check
+```
+
+### ساختار پروژه
+
+```
+cheraghtunnel/
+├── src/
+│   ├── main.rs              # نقطه ورود CLI (clap)
+│   ├── db.rs                # لایه دیتابیس SQLite
+│   ├── api/
+│   │   └── mod.rs           # پنل وب Axum + API ها
+│   ├── tunnel/
+│   │   ├── mod.rs           # موتور سرور و کلاینت تونل
+│   │   ├── multiplex.rs     # ریلی دوطرفه + مانیتور ترافیک
+│   │   └── transport/
+│   │       └── mod.rs       # هندشیک پروتکل‌های انتقال
+│   └── common/
+│       ├── crypto.rs        # توابع رمزنگاری
+│       ├── network.rs       # بهینه‌سازی سوکت + BBR
+│       └── obfuscate.rs     # پدینگ و جیتر تصادفی
+├── static/                  # فایل‌های UI (جاسازی‌شده در باینری)
+│   ├── index.html
+│   ├── style.css
+│   └── app.js
+├── .github/workflows/
+│   └── release.yml          # CI/CD خودکار بیلد و ریلیز
+├── install.sh               # اسکریپت نصب خودکار
+└── Cargo.toml
+```
+
+---
+
+## 🤝 مشارکت
+
+از مشارکت شما استقبال می‌کنیم! حوزه‌های مورد نیاز:
+
+- 🔬 **الگوریتم‌های شبیه‌سازی ترافیک** — بهبود پروفایل‌های انتقال موجود
+- 🧪 **تست‌نویسی** — افزودن تست‌های واحد و یکپارچگی
+- 📖 **مستندسازی** — بهبود راهنماها و مثال‌ها
+- 🌐 **ترجمه** — پشتیبانی چندزبانه رابط کاربری
+
+```bash
+# فورک کنید، تغییرات را اعمال کنید و PR بزنید
+git checkout -b feature/my-feature
+git commit -m "feat: add my feature"
+git push origin feature/my-feature
 ```
 
 ---
 
 ## 📜 لایسنس
-پروژه چراغ‌تونل تحت لایسنس MIT منتشر شده است و استفاده از آن برای تمام ادمین‌ها و کاربران به صورت کاملاً آزاد و رایگان مجاز است. 
 
-همچنین پذیرای مشارکت‌های شما (PRها) در جهت بهبود الگوریتم‌های شبیه‌سازی ترافیک و روش‌های تانلینگ خلاقانه هستیم!
+این پروژه تحت لایسنس **[MIT](LICENSE)** منتشر شده است.
+
+استفاده، تغییر و توزیع آزاد و رایگان است.
+
+---
+
+<div align="center">
+
+**ساخته‌شده با ❤️ و Rust**
+
+[🐛 گزارش باگ](https://github.com/iambaradaran/cheraghtunnel/issues) &nbsp;•&nbsp; [💡 پیشنهاد ویژگی](https://github.com/iambaradaran/cheraghtunnel/issues) &nbsp;•&nbsp; [📦 آخرین نسخه](https://github.com/iambaradaran/cheraghtunnel/releases/latest)
+
+</div>
