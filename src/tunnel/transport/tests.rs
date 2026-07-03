@@ -202,7 +202,7 @@ async fn test_protocol_ray() {
 
 #[tokio::test]
 async fn test_protocol_photon() {
-    run_handshake_test("photon", true).await;
+    run_handshake_test("photon", false).await;
 }
 
 #[tokio::test]
