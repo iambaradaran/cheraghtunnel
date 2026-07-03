@@ -14,6 +14,7 @@ pub struct Tunnel {
     pub token: String,
     pub decoy_url: Option<String>,
     pub backup_ips: Option<String>,
+    pub transport_options: Option<String>,
     pub status: String,
     pub stats_rx: u64,
     pub stats_tx: u64,
@@ -51,6 +52,7 @@ pub fn init_db(db_path: &Path) -> Result<()> {
 
     // Run schema migrations for existing DBs
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN backup_ips TEXT", []);
+    let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN transport_options TEXT", []);
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN stats_speed_rx INTEGER DEFAULT 0", []);
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN stats_speed_tx INTEGER DEFAULT 0", []);
 
@@ -98,14 +100,14 @@ pub fn init_db(db_path: &Path) -> Result<()> {
 pub fn get_tunnels(db_path: &Path) -> Result<Vec<Tunnel>> {
     let conn = get_db_conn(db_path)?;
     let mut stmt = conn.prepare(
-        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx FROM tunnels"
+        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx FROM tunnels"
     )?;
     
     let tunnel_iter = stmt.query_map([], |row| {
-        let rx: i64 = row.get(10)?;
-        let tx: i64 = row.get(11)?;
-        let rx_speed: i64 = row.get(12)?;
-        let tx_speed: i64 = row.get(13)?;
+        let rx: i64 = row.get(11)?;
+        let tx: i64 = row.get(12)?;
+        let rx_speed: i64 = row.get(13)?;
+        let tx_speed: i64 = row.get(14)?;
         Ok(Tunnel {
             id: Some(row.get(0)?),
             name: row.get(1)?,
@@ -116,7 +118,8 @@ pub fn get_tunnels(db_path: &Path) -> Result<Vec<Tunnel>> {
             token: row.get(6)?,
             decoy_url: row.get(7)?,
             backup_ips: row.get(8)?,
-            status: row.get(9)?,
+            transport_options: row.get(9)?,
+            status: row.get(10)?,
             stats_rx: rx as u64,
             stats_tx: tx as u64,
             stats_speed_rx: rx_speed as u64,
@@ -134,14 +137,14 @@ pub fn get_tunnels(db_path: &Path) -> Result<Vec<Tunnel>> {
 pub fn get_tunnel_by_id(db_path: &Path, id: i64) -> Result<Option<Tunnel>> {
     let conn = get_db_conn(db_path)?;
     let mut stmt = conn.prepare(
-        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx FROM tunnels WHERE id = ?1"
+        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx FROM tunnels WHERE id = ?1"
     )?;
     
     let mut rows = stmt.query_map(params![id], |row| {
-        let rx: i64 = row.get(10)?;
-        let tx: i64 = row.get(11)?;
-        let rx_speed: i64 = row.get(12)?;
-        let tx_speed: i64 = row.get(13)?;
+        let rx: i64 = row.get(11)?;
+        let tx: i64 = row.get(12)?;
+        let rx_speed: i64 = row.get(13)?;
+        let tx_speed: i64 = row.get(14)?;
         Ok(Tunnel {
             id: Some(row.get(0)?),
             name: row.get(1)?,
@@ -152,7 +155,8 @@ pub fn get_tunnel_by_id(db_path: &Path, id: i64) -> Result<Option<Tunnel>> {
             token: row.get(6)?,
             decoy_url: row.get(7)?,
             backup_ips: row.get(8)?,
-            status: row.get(9)?,
+            transport_options: row.get(9)?,
+            status: row.get(10)?,
             stats_rx: rx as u64,
             stats_tx: tx as u64,
             stats_speed_rx: rx_speed as u64,
@@ -170,8 +174,8 @@ pub fn get_tunnel_by_id(db_path: &Path, id: i64) -> Result<Option<Tunnel>> {
 pub fn create_tunnel(db_path: &Path, tunnel: &Tunnel) -> Result<i64> {
     let conn = get_db_conn(db_path)?;
     conn.execute(
-        "INSERT INTO tunnels (name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 0, 0, 0)",
+        "INSERT INTO tunnels (name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 0, 0, 0)",
         params![
             tunnel.name,
             tunnel.protocol,
@@ -181,6 +185,7 @@ pub fn create_tunnel(db_path: &Path, tunnel: &Tunnel) -> Result<i64> {
             tunnel.token,
             tunnel.decoy_url,
             tunnel.backup_ips,
+            tunnel.transport_options,
             "inactive"
         ],
     )?;
@@ -238,8 +243,8 @@ pub fn set_setting(db_path: &Path, key: &str, value: &str) -> Result<()> {
 pub fn update_tunnel(db_path: &Path, id: i64, tunnel: &Tunnel) -> Result<()> {
     let conn = get_db_conn(db_path)?;
     conn.execute(
-        "UPDATE tunnels SET name=?1, protocol=?2, iran_port=?3, kharej_port=?4, control_port=?5, token=?6, decoy_url=?7, backup_ips=?8
-         WHERE id=?9",
+        "UPDATE tunnels SET name=?1, protocol=?2, iran_port=?3, kharej_port=?4, control_port=?5, token=?6, decoy_url=?7, backup_ips=?8, transport_options=?9
+         WHERE id=?10",
         params![
             tunnel.name,
             tunnel.protocol,
@@ -249,6 +254,7 @@ pub fn update_tunnel(db_path: &Path, id: i64, tunnel: &Tunnel) -> Result<()> {
             tunnel.token,
             tunnel.decoy_url,
             tunnel.backup_ips,
+            tunnel.transport_options,
             id
         ],
     )?;

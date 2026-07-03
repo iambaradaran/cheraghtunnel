@@ -509,7 +509,7 @@ pub async fn client_handshake(
     token: &str,
 ) -> Result<TransportStream, Box<dyn Error + Send + Sync>> {
     match protocol {
-        "beam" | "tcpmux" => {
+        "beam" | "tcpmux" | "photon" | "quantummux" => {
             let auth = format!("{}{}", PSK_HEADER_PREFIX, token);
             socket.write_all(auth.as_bytes()).await?;
             socket.flush().await?;
@@ -611,7 +611,7 @@ pub async fn server_handshake(
     let expected = format!("{}{}", PSK_HEADER_PREFIX, token);
 
     match protocol {
-        "beam" | "tcpmux" => {
+        "beam" | "tcpmux" | "photon" | "quantummux" => {
             let mut buf = vec![0u8; expected.len()];
             socket.read_exact(&mut buf).await?;
             let auth = String::from_utf8_lossy(&buf);

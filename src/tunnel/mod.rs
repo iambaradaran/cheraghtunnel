@@ -30,13 +30,12 @@ async fn relay_control_channel(mut control: TransportStream, peer: TcpStream, tu
 }
 
 fn is_udp_protocol(protocol: &str) -> bool {
-    matches!(protocol, "flash" | "ray" | "photon" | "lantern" | "halo" | "hysteria")
+    matches!(protocol, "flash" | "ray" | "lantern" | "halo" | "hysteria")
 }
 
 fn get_udp_mode(protocol: &str) -> UdpMode {
     match protocol {
         "ray" => UdpMode::Ray,
-        "photon" => UdpMode::Photon,
         "lantern" => UdpMode::Lantern,
         "halo" => UdpMode::Halo,
         "hysteria" => UdpMode::Hysteria,

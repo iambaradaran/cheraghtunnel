@@ -57,17 +57,13 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('tunnel-token').value = Math.random().toString(36).substring(2, 12).toUpperCase();
     });
 
-    // Show/Hide decoy input based on protocol
+    // Show/Hide dynamic options based on protocol
     const protoSelect = document.getElementById('tunnel-protocol');
     protoSelect.addEventListener('change', () => {
-        const val = protoSelect.value;
-        const decoyGroup = document.getElementById('decoy-group');
-        if (val === 'mirage' || val === 'aura' || val === 'nova') {
-            decoyGroup.style.display = 'block';
-        } else {
-            decoyGroup.style.display = 'none';
-        }
+        renderDynamicOptions(protoSelect.value, 'dynamic-options-container');
     });
+    // Trigger initial render
+    renderDynamicOptions(protoSelect.value, 'dynamic-options-container');
 
     // Create Form Submit
     const createForm = document.getElementById('create-tunnel-form');
@@ -80,7 +76,8 @@ document.addEventListener('DOMContentLoaded', () => {
             control_port: parseInt(document.getElementById('control-port').value),
             kharej_port: parseInt(document.getElementById('kharej-port').value),
             token: document.getElementById('tunnel-token').value,
-            decoy_url: document.getElementById('decoy-url').value || null,
+            decoy_url: null,
+            transport_options: extractDynamicOptions('dynamic-options-container'),
             backup_ips: document.getElementById('backup-ips').value || null,
             status: "inactive",
             stats_rx: 0,
@@ -310,7 +307,12 @@ async function showEditModal(id) {
         document.getElementById('edit-control-port').value = t.control_port;
         document.getElementById('edit-kharej-port').value = t.kharej_port;
         document.getElementById('edit-backup-ips').value = t.backup_ips || '';
-        document.getElementById('edit-decoy-url').value = t.decoy_url || '';
+        
+        let initialOpts = null;
+        if (t.transport_options) {
+            try { initialOpts = JSON.parse(t.transport_options); } catch (e) {}
+        }
+        renderDynamicOptions(t.protocol, 'edit-dynamic-options-container', initialOpts);
         document.getElementById('edit-tunnel-token').value = t.token;
         
         document.getElementById('edit-modal').style.display = 'flex';
@@ -367,6 +369,11 @@ document.addEventListener('DOMContentLoaded', () => {
         editModal.style.display = 'none';
     });
 
+    const editProtoSelect = document.getElementById('edit-tunnel-protocol');
+    editProtoSelect.addEventListener('change', () => {
+        renderDynamicOptions(editProtoSelect.value, 'edit-dynamic-options-container');
+    });
+
     // Generate token in edit modal
     document.getElementById('edit-gen-token-btn').addEventListener('click', () => {
         const randToken = Array.from({length: 10}, () => Math.random().toString(36).charAt(2).toUpperCase()).join('');
@@ -385,7 +392,8 @@ document.addEventListener('DOMContentLoaded', () => {
             control_port: parseInt(document.getElementById('edit-control-port').value),
             kharej_port: parseInt(document.getElementById('edit-kharej-port').value),
             token: document.getElementById('edit-tunnel-token').value,
-            decoy_url: document.getElementById('edit-decoy-url').value || null,
+            decoy_url: null,
+            transport_options: extractDynamicOptions('edit-dynamic-options-container'),
             backup_ips: document.getElementById('edit-backup-ips').value || null,
             status: "inactive",
             stats_rx: 0,
@@ -411,3 +419,97 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 });
+
+const PROTOCOL_OPTIONS_SCHEMA = {
+    "photon": [
+        { name: "mtu", label: "MTU (Max Transmission Unit)", type: "number", default: 1350 },
+        { name: "nodelay", label: "TCP NoDelay", type: "checkbox", default: true }
+    ],
+    "mirage": [
+        { name: "sni", label: "SNI (Server Name Indication)", type: "text", default: "www.microsoft.com" },
+        { name: "fingerprint", label: "uTLS Fingerprint", type: "select", options: ["chrome", "firefox", "safari", "random"], default: "chrome" }
+    ],
+    "hysteria": [
+        { name: "up_mbps", label: "Upload Speed (Mbps)", type: "number", default: 100 },
+        { name: "down_mbps", label: "Download Speed (Mbps)", type: "number", default: 100 }
+    ],
+    "aura": [
+        { name: "host", label: "HTTP Host Header", type: "text", default: "bing.com" }
+    ],
+    "nova": [
+        { name: "host", label: "TLS Host Header", type: "text", default: "cloudflare.com" }
+    ]
+};
+
+function renderDynamicOptions(protocol, containerId, initialData = null) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = '';
+    
+    const schema = PROTOCOL_OPTIONS_SCHEMA[protocol];
+    if (!schema) return;
+    
+    schema.forEach(field => {
+        const group = document.createElement('div');
+        group.className = 'form-group';
+        
+        const label = document.createElement('label');
+        label.innerText = field.label;
+        group.appendChild(label);
+        
+        let value = initialData && initialData[field.name] !== undefined ? initialData[field.name] : field.default;
+        
+        if (field.type === 'select') {
+            const select = document.createElement('select');
+            select.dataset.name = field.name;
+            select.dataset.type = field.type;
+            field.options.forEach(opt => {
+                const option = document.createElement('option');
+                option.value = opt;
+                option.innerText = opt;
+                if (opt === value) option.selected = true;
+                select.appendChild(option);
+            });
+            group.appendChild(select);
+        } else if (field.type === 'checkbox') {
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.dataset.name = field.name;
+            input.dataset.type = field.type;
+            if (value) input.checked = true;
+            group.appendChild(input);
+        } else {
+            const input = document.createElement('input');
+            input.type = field.type;
+            input.dataset.name = field.name;
+            input.dataset.type = field.type;
+            input.value = value;
+            group.appendChild(input);
+        }
+        
+        container.appendChild(group);
+    });
+}
+
+function extractDynamicOptions(containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return null;
+    
+    const elements = container.querySelectorAll('[data-name]');
+    if (elements.length === 0) return null;
+    
+    const opts = {};
+    elements.forEach(el => {
+        const name = el.dataset.name;
+        if (el.dataset.type === 'checkbox') {
+            opts[name] = el.checked;
+        } else if (el.dataset.type === 'number') {
+            opts[name] = parseInt(el.value);
+        } else {
+            opts[name] = el.value;
+        }
+    });
+    
+    return JSON.stringify(opts);
+}
+
