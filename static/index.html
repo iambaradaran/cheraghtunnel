@@ -157,8 +157,8 @@
                     <button type="button" id="gen-token-btn" class="btn btn-secondary btn-small">Generate Random</button>
                 </div>
                 <div class="form-group" id="decoy-group" style="display: none;">
-                    <label for="decoy-url">Decoy Website URL (Mirage/Aura)</label>
-                    <input type="text" id="decoy-url" placeholder="e.g. https://www.microsoft.com">
+                    <label for="decoy-url">Decoy Website URL / SNI (WSS/TLS/Mirage/Aura)</label>
+                    <input type="text" id="decoy-url" placeholder="e.g. google.com">
                 </div>
                 <div class="modal-actions">
                     <button type="button" id="close-create-modal" class="btn btn-secondary">Cancel</button>
@@ -178,10 +178,10 @@
                 <button id="copy-cmd-btn" class="btn btn-secondary btn-small">Copy Command</button>
             </div>
             <p class="warning-alert">
-                <strong>NOTE:</strong> The command fetches the custom script built for this tunnel configuration.
+                <strong>Important:</strong> Ensure the server's control port is open in your Iran VPS firewall!
             </p>
             <div class="modal-actions">
-                <button type="button" id="close-cmd-modal" class="btn btn-primary">Done</button>
+                <button type="button" id="close-cmd-modal" class="btn btn-primary">Close</button>
             </div>
         </div>
     </div>
@@ -189,14 +189,12 @@
     <!-- SSH Deploy Modal -->
     <div id="deploy-modal" class="modal-overlay" style="display: none;">
         <div class="glass-card modal-card">
-            <h3>SSH Auto-Deploy Client Node</h3>
-            <p style="color: var(--text-secondary); margin-bottom: 20px; font-size: 0.9rem;">
-                Enter your Kharej server SSH credentials. The panel will automatically log in, download the dependencies, set up the client, and start the background node.
-            </p>
+            <h3>Direct SSH Deploy to Kharej</h3>
+            <p>This will connect to your Kharej server over SSH, automatically configure systemd, and launch the tunnel client node.</p>
             <form id="deploy-tunnel-form">
                 <input type="hidden" id="deploy-tunnel-id">
                 <div class="form-row">
-                    <div class="form-group" style="flex: 2;">
+                    <div class="form-group" style="flex: 3;">
                         <label for="ssh-host">Kharej Server IP/Host</label>
                         <input type="text" id="ssh-host" required placeholder="e.g. 85.93.2.10">
                     </div>
@@ -270,6 +268,10 @@
                 </div>
                 <div id="edit-dynamic-options-container" class="dynamic-options-container">
                     <!-- Dynamic protocol-specific options will be injected here via JS -->
+                </div>
+                <div class="form-group" id="edit-decoy-group" style="display: none;">
+                    <label for="edit-decoy-url">Decoy Website URL / SNI (WSS/TLS/Mirage/Aura)</label>
+                    <input type="text" id="edit-decoy-url" placeholder="e.g. google.com">
                 </div>
                 <div class="form-group">
                     <label for="edit-tunnel-token">Auth Token</label>

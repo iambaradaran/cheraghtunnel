@@ -58,12 +58,28 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Show/Hide dynamic options based on protocol
+    const DECOY_PROTOCOLS = ['aura', 'nova', 'glimmer', 'beacon', 'mirage'];
+    
+    function toggleDecoyVisibility(protocol, groupId) {
+        const group = document.getElementById(groupId);
+        if (group) {
+            if (DECOY_PROTOCOLS.includes(protocol)) {
+                group.style.display = 'block';
+            } else {
+                group.style.display = 'none';
+            }
+        }
+    }
+    window.toggleDecoyVisibility = toggleDecoyVisibility; // Expose globally for showEditModal
+
     const protoSelect = document.getElementById('tunnel-protocol');
     protoSelect.addEventListener('change', () => {
         renderDynamicOptions(protoSelect.value, 'dynamic-options-container');
+        toggleDecoyVisibility(protoSelect.value, 'decoy-group');
     });
     // Trigger initial render
     renderDynamicOptions(protoSelect.value, 'dynamic-options-container');
+    toggleDecoyVisibility(protoSelect.value, 'decoy-group');
 
     // Create Form Submit
     const createForm = document.getElementById('create-tunnel-form');
@@ -76,7 +92,9 @@ document.addEventListener('DOMContentLoaded', () => {
             control_port: parseInt(document.getElementById('control-port').value),
             kharej_port: parseInt(document.getElementById('kharej-port').value),
             token: document.getElementById('tunnel-token').value,
-            decoy_url: null,
+            decoy_url: DECOY_PROTOCOLS.includes(document.getElementById('tunnel-protocol').value)
+                ? document.getElementById('decoy-url').value || "google.com"
+                : null,
             transport_options: extractDynamicOptions('dynamic-options-container'),
             backup_ips: document.getElementById('backup-ips').value || null,
             status: "inactive",
@@ -314,6 +332,10 @@ async function showEditModal(id) {
         }
         renderDynamicOptions(t.protocol, 'edit-dynamic-options-container', initialOpts);
         document.getElementById('edit-tunnel-token').value = t.token;
+        document.getElementById('edit-decoy-url').value = t.decoy_url || '';
+        if (window.toggleDecoyVisibility) {
+            window.toggleDecoyVisibility(t.protocol, 'edit-decoy-group');
+        }
         
         document.getElementById('edit-modal').style.display = 'flex';
     } catch (err) {
@@ -372,6 +394,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const editProtoSelect = document.getElementById('edit-tunnel-protocol');
     editProtoSelect.addEventListener('change', () => {
         renderDynamicOptions(editProtoSelect.value, 'edit-dynamic-options-container');
+        if (window.toggleDecoyVisibility) {
+            window.toggleDecoyVisibility(editProtoSelect.value, 'edit-decoy-group');
+        }
     });
 
     // Generate token in edit modal
@@ -392,7 +417,9 @@ document.addEventListener('DOMContentLoaded', () => {
             control_port: parseInt(document.getElementById('edit-control-port').value),
             kharej_port: parseInt(document.getElementById('edit-kharej-port').value),
             token: document.getElementById('edit-tunnel-token').value,
-            decoy_url: null,
+            decoy_url: DECOY_PROTOCOLS.includes(document.getElementById('edit-tunnel-protocol').value)
+                ? document.getElementById('edit-decoy-url').value || "google.com"
+                : null,
             transport_options: extractDynamicOptions('edit-dynamic-options-container'),
             backup_ips: document.getElementById('edit-backup-ips').value || null,
             status: "inactive",
