@@ -15,19 +15,19 @@ use kcp_tokio::{KcpConfig, KcpListener, KcpStream};
 const MTU: usize = 1400;
 
 pub fn apply_iptables_drop(port: u16) {
-    println!("[FakeTCP] Applying iptables drop rule for port {}...", port);
+    println!("[FakeTCP] Applying iptables drop rule for outgoing RST on port {}...", port);
     let _ = Command::new("iptables")
-        .args(["-D", "INPUT", "-p", "tcp", "--dport", &port.to_string(), "-j", "DROP"])
+        .args(["-D", "OUTPUT", "-p", "tcp", "--sport", &port.to_string(), "--tcp-flags", "RST", "RST", "-j", "DROP"])
         .status();
     let _ = Command::new("iptables")
-        .args(["-I", "INPUT", "-p", "tcp", "--dport", &port.to_string(), "-j", "DROP"])
+        .args(["-I", "OUTPUT", "-p", "tcp", "--sport", &port.to_string(), "--tcp-flags", "RST", "RST", "-j", "DROP"])
         .status();
 }
 
 pub fn remove_iptables_drop(port: u16) {
-    println!("[FakeTCP] Removing iptables drop rule for port {}...", port);
+    println!("[FakeTCP] Removing iptables drop rule for outgoing RST on port {}...", port);
     let _ = Command::new("iptables")
-        .args(["-D", "INPUT", "-p", "tcp", "--dport", &port.to_string(), "-j", "DROP"])
+        .args(["-D", "OUTPUT", "-p", "tcp", "--sport", &port.to_string(), "--tcp-flags", "RST", "RST", "-j", "DROP"])
         .status();
 }
 
