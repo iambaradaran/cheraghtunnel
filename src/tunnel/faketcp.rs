@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::net::UdpSocket as AsyncUdpSocket;
 use kcp_tokio::{KcpConfig, KcpListener, KcpStream};
 
@@ -110,7 +111,9 @@ impl FakeTcpClient {
         let (tx, mut rx) = transport_channel(65535, TransportChannelType::Layer3(IpNextHeaderProtocols::Tcp)).unwrap();
         
         let client_seq = rand::thread_rng().gen::<u32>();
-        
+        let last_seen_seq = Arc::new(AtomicU32::new(1000));
+        let last_seen_seq_clone = last_seen_seq.clone();
+
         // --- Start Proxy (No TCP Handshake, just pure spoofing) ---
         let std_udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let local_udp = std_udp.local_addr().unwrap();
@@ -139,6 +142,10 @@ impl FakeTcpClient {
                         if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
                             if tcp.get_source() == remote_port && tcp.get_destination() == local_port {
                                 let payload = tcp.payload();
+                                let server_seq = tcp.get_sequence();
+                                let payload_len = payload.len() as u32;
+                                last_seen_seq_clone.store(server_seq.wrapping_add(payload_len), Ordering::Relaxed);
+
                                 if !payload.is_empty() {
                                     if let Some(addr) = *addr_rx.lock().unwrap() {
                                         let _ = udp_rx.send_to(payload, addr);
@@ -155,14 +162,15 @@ impl FakeTcpClient {
         let tx_mutex = Arc::new(Mutex::new(tx));
         
         // Async task for sending FakeTCP
+        let last_seen_seq_send = last_seen_seq.clone();
         tokio::spawn(async move {
             let mut buf = [0u8; MTU];
             let mut seq = client_seq.wrapping_add(1);
-            let ack = 1000u32;
             loop {
                 if let Ok((n, src_addr)) = async_udp.recv_from(&mut buf).await {
                     *client_udp_addr.lock().unwrap() = Some(src_addr);
                     
+                    let ack = last_seen_seq_send.load(Ordering::Relaxed);
                     let pkt = craft_tcp_ip_packet(
                         local_ip, remote_ip, local_port, remote_port,
                         seq, ack, TcpFlags::PSH | TcpFlags::ACK, &buf[..n]
@@ -203,7 +211,7 @@ impl FakeTcpServer {
         
         let local_port = self.local_port;
         
-        let clients = Arc::new(Mutex::new(HashMap::<SocketAddrV4, std::net::UdpSocket>::new()));
+        let clients = Arc::new(Mutex::new(HashMap::<SocketAddrV4, (std::net::UdpSocket, Arc<AtomicU32>)>::new()));
         let tx_mutex = Arc::new(Mutex::new(tx));
         let guard_clone = guard.clone();
         let rt_handle = tokio::runtime::Handle::current();
@@ -223,27 +231,36 @@ impl FakeTcpServer {
                                 let dst_ip = ipv4.get_destination();
 
                                 let payload = tcp.payload();
+                                let client_seq = tcp.get_sequence();
+                                let payload_len = payload.len() as u32;
+                                let next_ack = client_seq.wrapping_add(payload_len);
+
                                 if !payload.is_empty() {
                                     let mut clients_map = clients.lock().unwrap();
-                                    let udp = if let Some(u) = clients_map.get(&remote_addr) {
-                                        u.try_clone().unwrap()
+                                    let (udp, _seq_tracker) = if let Some((u, s)) = clients_map.get(&remote_addr) {
+                                        s.store(next_ack, Ordering::Relaxed);
+                                        (u.try_clone().unwrap(), s.clone())
                                     } else {
                                         let new_udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
                                         new_udp.connect(kcp_local_udp).unwrap();
                                         new_udp.set_nonblocking(true).unwrap();
-                                        clients_map.insert(remote_addr, new_udp.try_clone().unwrap());
+                                        
+                                        let seq_tracker = Arc::new(AtomicU32::new(next_ack));
+                                        clients_map.insert(remote_addr, (new_udp.try_clone().unwrap(), seq_tracker.clone()));
                                         
                                         let async_udp = AsyncUdpSocket::from_std(new_udp.try_clone().unwrap()).unwrap();
                                         let reverse_tx = handle_tx.clone();
+                                        let seq_tracker_clone = seq_tracker.clone();
                                         
                                         tokio::spawn(async move {
                                             let mut buf = [0u8; MTU];
                                             let mut rseq = 1000u32;
                                             loop {
                                                 if let Ok((n, _)) = async_udp.recv_from(&mut buf).await {
+                                                    let ack = seq_tracker_clone.load(Ordering::Relaxed);
                                                     let pkt = craft_tcp_ip_packet(
                                                         dst_ip, *remote_addr.ip(), local_port, remote_addr.port(),
-                                                        rseq, 0, TcpFlags::PSH | TcpFlags::ACK, &buf[..n]
+                                                        rseq, ack, TcpFlags::PSH | TcpFlags::ACK, &buf[..n]
                                                     );
                                                     let ip = MutableIpv4Packet::owned(pkt).unwrap();
                                                     rseq = rseq.wrapping_add(n as u32);
@@ -252,7 +269,7 @@ impl FakeTcpServer {
                                                 }
                                             }
                                         });
-                                        new_udp
+                                        (new_udp, seq_tracker)
                                     };
                                     
                                     let _ = udp.send(payload);
