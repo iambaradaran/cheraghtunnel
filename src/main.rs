@@ -47,6 +47,10 @@ enum Commands {
         /// Custom decoy website URL or local path for Mirage/Aura
         #[arg(long)]
         decoy: Option<String>,
+
+        /// Enable Dynamic Port Hopping
+        #[arg(long, default_value_t = false)]
+        port_hopping: bool,
     },
     /// Start the tunnel client node (Kharej server)
     Client {
@@ -81,6 +85,10 @@ enum Commands {
         /// Custom decoy website URL (SNI) for TLS/WSS protocols
         #[arg(long)]
         decoy: Option<String>,
+
+        /// Enable Dynamic Port Hopping
+        #[arg(long, default_value_t = false)]
+        port_hopping: bool,
     },
 }
 
@@ -93,13 +101,13 @@ async fn main() {
 
     match cli.command {
         Commands::Panel { port, db_path } => {
-            println!("Initializing CheraghTunnel Panel on port {}...", port);
+            println!("Initializing CheraghTunnel SQLite database at: {:?}", db_path);
             if let Err(e) = db::init_db(&db_path) {
-                eprintln!("Database initialization failed: {}", e);
+                eprintln!("Failed to initialize database: {}", e);
                 std::process::exit(1);
             }
             if let Err(e) = api::run_panel(port, db_path).await {
-                eprintln!("Panel server error: {}", e);
+                eprintln!("Web Panel execution error: {}", e);
                 std::process::exit(1);
             }
         }
@@ -109,11 +117,12 @@ async fn main() {
             token,
             protocol,
             decoy,
+            port_hopping,
         } => {
             println!("Starting CheraghTunnel Server on control port {}, forwarding public port {} via protocol '{}'...",
                      control_port, public_port, protocol);
             let active_controls = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-            if let Err(e) = tunnel::run_server(control_port, public_port, &token, &protocol, decoy, 0, active_controls).await {
+            if let Err(e) = tunnel::run_server(control_port, public_port, &token, &protocol, decoy, 0, active_controls, port_hopping).await {
                 eprintln!("Server tunnel error: {}", e);
                 std::process::exit(1);
             }
@@ -127,10 +136,10 @@ async fn main() {
             protocol,
             tunnel_id,
             decoy,
+            port_hopping,
         } => {
-            println!("Starting CheraghTunnel Client connecting to {}:{} forwarding to {}...",
-                     server_ip, control_port, local_service);
-            if let Err(e) = tunnel::run_client(&server_ip, control_port, public_port, &local_service, &token, &protocol, tunnel_id, decoy).await {
+            println!("Starting CheraghTunnel Client connecting to {}:{}...", server_ip, control_port);
+            if let Err(e) = tunnel::run_client(&server_ip, control_port, public_port, &local_service, &token, &protocol, tunnel_id, decoy, port_hopping).await {
                 eprintln!("Client tunnel error: {}", e);
                 std::process::exit(1);
             }

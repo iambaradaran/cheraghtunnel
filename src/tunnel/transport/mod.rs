@@ -895,6 +895,18 @@ async fn fetch_decoy_proxy(decoy_url: &str) -> Result<(u16, Vec<(String, String)
     Ok((status, headers, body))
 }
 
+fn clean_decoy_domain(url: &str) -> String {
+    let without_proto = if let Some(stripped) = url.strip_prefix("https://") {
+        stripped
+    } else if let Some(stripped) = url.strip_prefix("http://") {
+        stripped
+    } else {
+        url
+    };
+    let host = without_proto.split('/').next().unwrap_or(url);
+    host.split(':').next().unwrap_or(host).to_string()
+}
+
 async fn send_decoy_response<S>(socket: &mut S, decoy: Option<String>) -> io::Result<()>
 where
     S: tokio::io::AsyncWrite + Unpin,
@@ -909,7 +921,20 @@ where
     let mut body = b"<!DOCTYPE html><html><head><title>Welcome</title></head><body><h1>Under Construction</h1></body></html>".to_vec();
 
     if let Some(ref d) = decoy {
-        if d.starts_with("http://") || d.starts_with("https://") {
+        let domain = clean_decoy_domain(d);
+        let local_path = format!("static/decoys/{}.html", domain);
+        let path = std::path::Path::new(&local_path);
+        
+        if path.exists() {
+            if let Ok(content) = std::fs::read(path) {
+                status = 200;
+                headers = vec![
+                    ("Content-Type".to_string(), "text/html; charset=UTF-8".to_string()),
+                    ("Connection".to_string(), "close".to_string()),
+                ];
+                body = content;
+            }
+        } else if d.starts_with("http://") || d.starts_with("https://") {
             // Attempt to reverse proxy the decoy website
             match fetch_decoy_proxy(d).await {
                 Ok((s, h, b)) => {

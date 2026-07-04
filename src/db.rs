@@ -20,6 +20,10 @@ pub struct Tunnel {
     pub stats_tx: u64,
     pub stats_speed_rx: u64,
     pub stats_speed_tx: u64,
+    pub port_hopping: Option<i32>,
+    pub quota_limit_bytes: Option<i64>,
+    pub quota_used_bytes: Option<i64>,
+    pub speed_limit_kbps: Option<i32>,
 }
 
 pub fn get_db_conn(db_path: &Path) -> Result<Connection> {
@@ -54,6 +58,10 @@ pub fn init_db(db_path: &Path) -> Result<()> {
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN transport_options TEXT", []);
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN stats_speed_rx INTEGER DEFAULT 0", []);
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN stats_speed_tx INTEGER DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN port_hopping INTEGER DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN quota_limit_bytes INTEGER DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN quota_used_bytes INTEGER DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN speed_limit_kbps INTEGER DEFAULT 0", []);
 
     // Create telemetry_logs table to store RTT/loss history
     conn.execute(
@@ -112,7 +120,7 @@ pub fn init_db(db_path: &Path) -> Result<()> {
 pub fn get_tunnels(db_path: &Path) -> Result<Vec<Tunnel>> {
     let conn = get_db_conn(db_path)?;
     let mut stmt = conn.prepare(
-        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx FROM tunnels"
+        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx, port_hopping, quota_limit_bytes, quota_used_bytes, speed_limit_kbps FROM tunnels"
     )?;
     
     let tunnel_iter = stmt.query_map([], |row| {
@@ -136,6 +144,10 @@ pub fn get_tunnels(db_path: &Path) -> Result<Vec<Tunnel>> {
             stats_tx: tx as u64,
             stats_speed_rx: rx_speed as u64,
             stats_speed_tx: tx_speed as u64,
+            port_hopping: row.get(15)?,
+            quota_limit_bytes: row.get(16)?,
+            quota_used_bytes: row.get(17)?,
+            speed_limit_kbps: row.get(18)?,
         })
     })?;
 
@@ -149,7 +161,7 @@ pub fn get_tunnels(db_path: &Path) -> Result<Vec<Tunnel>> {
 pub fn get_tunnel_by_id(db_path: &Path, id: i64) -> Result<Option<Tunnel>> {
     let conn = get_db_conn(db_path)?;
     let mut stmt = conn.prepare(
-        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx FROM tunnels WHERE id = ?1"
+        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx, port_hopping, quota_limit_bytes, quota_used_bytes, speed_limit_kbps FROM tunnels WHERE id = ?1"
     )?;
     
     let mut rows = stmt.query_map(params![id], |row| {
@@ -173,6 +185,10 @@ pub fn get_tunnel_by_id(db_path: &Path, id: i64) -> Result<Option<Tunnel>> {
             stats_tx: tx as u64,
             stats_speed_rx: rx_speed as u64,
             stats_speed_tx: tx_speed as u64,
+            port_hopping: row.get(15)?,
+            quota_limit_bytes: row.get(16)?,
+            quota_used_bytes: row.get(17)?,
+            speed_limit_kbps: row.get(18)?,
         })
     })?;
 
@@ -186,8 +202,8 @@ pub fn get_tunnel_by_id(db_path: &Path, id: i64) -> Result<Option<Tunnel>> {
 pub fn create_tunnel(db_path: &Path, tunnel: &Tunnel) -> Result<i64> {
     let conn = get_db_conn(db_path)?;
     conn.execute(
-        "INSERT INTO tunnels (name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 0, 0, 0)",
+        "INSERT INTO tunnels (name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx, port_hopping, quota_limit_bytes, quota_used_bytes, speed_limit_kbps)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 0, 0, 0, ?11, ?12, ?13, ?14)",
         params![
             tunnel.name,
             tunnel.protocol,
@@ -198,7 +214,11 @@ pub fn create_tunnel(db_path: &Path, tunnel: &Tunnel) -> Result<i64> {
             tunnel.decoy_url,
             tunnel.backup_ips,
             tunnel.transport_options,
-            "inactive"
+            "inactive",
+            tunnel.port_hopping.unwrap_or(0),
+            tunnel.quota_limit_bytes.unwrap_or(0),
+            tunnel.quota_used_bytes.unwrap_or(0),
+            tunnel.speed_limit_kbps.unwrap_or(0),
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -255,8 +275,8 @@ pub fn set_setting(db_path: &Path, key: &str, value: &str) -> Result<()> {
 pub fn update_tunnel(db_path: &Path, id: i64, tunnel: &Tunnel) -> Result<()> {
     let conn = get_db_conn(db_path)?;
     conn.execute(
-        "UPDATE tunnels SET name=?1, protocol=?2, iran_port=?3, kharej_port=?4, control_port=?5, token=?6, decoy_url=?7, backup_ips=?8, transport_options=?9
-         WHERE id=?10",
+        "UPDATE tunnels SET name=?1, protocol=?2, iran_port=?3, kharej_port=?4, control_port=?5, token=?6, decoy_url=?7, backup_ips=?8, transport_options=?9, port_hopping=?10, quota_limit_bytes=?11, quota_used_bytes=?12, speed_limit_kbps=?13
+         WHERE id=?14",
         params![
             tunnel.name,
             tunnel.protocol,
@@ -267,6 +287,10 @@ pub fn update_tunnel(db_path: &Path, id: i64, tunnel: &Tunnel) -> Result<()> {
             tunnel.decoy_url,
             tunnel.backup_ips,
             tunnel.transport_options,
+            tunnel.port_hopping.unwrap_or(0),
+            tunnel.quota_limit_bytes.unwrap_or(0),
+            tunnel.quota_used_bytes.unwrap_or(0),
+            tunnel.speed_limit_kbps.unwrap_or(0),
             id
         ],
     )?;

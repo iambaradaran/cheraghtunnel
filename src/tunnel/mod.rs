@@ -4,6 +4,8 @@ pub mod transport;
 
 use std::error::Error;
 use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
@@ -45,6 +47,158 @@ fn is_faketcp_protocol(protocol: &str) -> bool {
     protocol == "photon"
 }
 
+pub fn get_hopped_port(base_port: u16, token: &str, epoch: u64) -> u16 {
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    hasher.update(&epoch.to_be_bytes());
+    let hash = hasher.finalize();
+    let offset = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]) % 20; // Rotate over a range of 20 ports
+    base_port + offset as u16
+}
+
+fn spawn_protocol_listener(
+    control_port: u16,
+    protocol: String,
+    token: String,
+    decoy: Option<String>,
+    control_tx: mpsc::Sender<TransportStream>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let token_owned = token;
+        let protocol_owned = protocol;
+        let decoy_owned = decoy;
+
+        if is_faketcp_protocol(&protocol_owned) {
+            // --- FakeTCP (KCP) Protocol Server ---
+            let mut config = kcp_tokio::KcpConfig::new().turbo_mode().stream_mode(true);
+            config.snd_wnd = 2048;
+            config.rcv_wnd = 2048;
+            config.mtu = 1300;
+            config.nodelay.resend = 2;
+            config.socket_buffer_size = Some(1024 * 1024 * 8);
+            let server = crate::tunnel::faketcp::FakeTcpServer::new(control_port);
+            let mut kcp_listener = match server.bind(config).await {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("[SERVER] Failed to bind FakeTCP port {}: {}", control_port, e);
+                    return;
+                }
+            };
+
+            println!("[SERVER] Listening for FakeTCP/KCP connections on port: {}", control_port);
+
+            loop {
+                match kcp_listener.accept().await {
+                    Ok((mut kcp_stream, addr)) => {
+                        let token_clone = token_owned.clone();
+                        let control_tx_clone = control_tx.clone();
+                        tokio::spawn(async move {
+                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                            let token_auth = format!("Cheragh-Auth {}", token_clone);
+                            let mut buf = vec![0u8; token_auth.len()];
+                            if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), kcp_stream.read_exact(&mut buf)).await {
+                                let auth_str = String::from_utf8_lossy(&buf);
+                                if auth_str == token_auth {
+                                    if kcp_stream.write_all(b"ACK").await.is_ok() && kcp_stream.flush().await.is_ok() {
+                                        println!("[SERVER] Authentic client connected from: {} (FakeTCP/KCP) on port {}", addr, control_port);
+                                        let _ = control_tx_clone.send(TransportStream::Kcp(kcp_stream)).await;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("[SERVER] FakeTCP Kcp listener error: {}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                }
+            }
+        } else if is_udp_protocol(&protocol_owned) {
+            // --- UDP Control Protocol Server ---
+            let mode = get_udp_mode(&protocol_owned);
+            let control_addr = format!("0.0.0.0:{}", control_port);
+            let socket = match UdpSocket::bind(&control_addr).await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[SERVER] Failed to bind UDP control port {}: {}", control_port, e);
+                    return;
+                }
+            };
+            
+            println!("[SERVER] Listening for UDP control packets on port: {}", control_port);
+            
+            let (new_conn_tx, mut new_conn_rx) = mpsc::channel::<UdpVirtualStream>(100);
+            let _multiplexer = UdpMultiplexer::new(socket, mode, new_conn_tx);
+            
+            let token_auth = format!("Cheragh-Auth {}", token_owned);
+            let control_tx_clone = control_tx.clone();
+            tokio::spawn(async move {
+                while let Some(mut stream) = new_conn_rx.recv().await {
+                    let token_auth_clone = token_auth.clone();
+                    let control_tx_clone_inner = control_tx_clone.clone();
+                    
+                    tokio::spawn(async move {
+                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                        let mut buf = vec![0u8; token_auth_clone.len()];
+                        if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read_exact(&mut buf)).await {
+                            let auth_str = String::from_utf8_lossy(&buf);
+                            if auth_str == token_auth_clone {
+                                if stream.write_all(b"ACK").await.is_ok() && stream.flush().await.is_ok() {
+                                    println!("[SERVER] Authentic client connected (UDP) on port {}", control_port);
+                                    let _ = control_tx_clone_inner.send(TransportStream::Udp(stream)).await;
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+        } else {
+            // --- TCP/TLS/WS Control Protocol Server ---
+            let control_addr = format!("0.0.0.0:{}", control_port);
+            let control_listener = match tokio::net::TcpListener::bind(&control_addr).await {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("[SERVER] Failed to bind control port {}: {}", control_port, e);
+                    return;
+                }
+            };
+            
+            println!("[SERVER] Listening for TCP control connections on port: {}", control_port);
+            
+            loop {
+                match control_listener.accept().await {
+                    Ok((control_socket, addr)) => {
+                        let _ = crate::common::network::optimize_socket(&control_socket);
+                        let proto_clone = protocol_owned.clone();
+                        let token_clone = token_owned.clone();
+                        let decoy_clone = decoy_owned.clone();
+                        let control_tx_clone = control_tx.clone();
+
+                        tokio::spawn(async move {
+                            match server_handshake(control_socket, &proto_clone, &token_clone, decoy_clone).await {
+                                Ok(s) => {
+                                    println!("[SERVER] Authentic client connected from: {} on port {}", addr, control_port);
+                                    if control_tx_clone.send(s).await.is_err() {
+                                        eprintln!("[SERVER] Control channel closed, dropping node stream");
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("[SERVER] Handshake failed from {}: {}", addr, e);
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("[SERVER] Control listener error: {}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                }
+            }
+        }
+    })
+}
+
 pub async fn run_server(
     control_port: u16,
     public_port: u16,
@@ -53,10 +207,11 @@ pub async fn run_server(
     decoy: Option<String>,
     tunnel_id: i64,
     active_controls: Arc<tokio::sync::Mutex<Vec<yamux::Control>>>,
+    port_hopping: bool,
 ) -> Result<(), Box<dyn Error>> {
     println!(
-        "[SERVER] Launching protocol: '{}' on control port: {}, public port: {}",
-        protocol, control_port, public_port
+        "[SERVER] Launching protocol: '{}' on control port: {}, public port: {}, Port Hopping: {}",
+        protocol, control_port, public_port, port_hopping
     );
 
     let public_addr: std::net::SocketAddr = format!("0.0.0.0:{}", public_port).parse()?;
@@ -65,6 +220,7 @@ pub async fn run_server(
 
     // Queue to hold authenticated control streams ready for public connections
     let (control_tx, mut control_rx) = mpsc::channel::<TransportStream>(64);
+    let rr_index = Arc::new(AtomicUsize::new(0));
 
     let token_owned = token.to_string();
     let protocol_owned = protocol.to_string();
@@ -74,134 +230,49 @@ pub async fn run_server(
     // Wrap in LoopGuard so the task is auto-aborted when run_server returns.
     let _accept_guard = LoopGuard {
         handle: Some(tokio::spawn(async move {
-            if is_faketcp_protocol(&protocol_owned) {
-                // --- FakeTCP (KCP) Protocol Server ---
-                let mut config = kcp_tokio::KcpConfig::new().turbo_mode().stream_mode(true);
-                config.snd_wnd = 2048;
-                config.rcv_wnd = 2048;
-                config.mtu = 1300;
-                config.nodelay.resend = 2;
-                config.socket_buffer_size = Some(1024 * 1024 * 8);
-                let server = crate::tunnel::faketcp::FakeTcpServer::new(control_port);
-                let mut kcp_listener = match server.bind(config).await {
-                    Ok(l) => l,
-                    Err(e) => {
-                        eprintln!("[SERVER] Failed to bind FakeTCP port {}: {}", control_port, e);
-                        return;
-                    }
-                };
-
-                println!("[SERVER] Listening for FakeTCP/KCP connections on port: {}", control_port);
+            if port_hopping {
+                let mut current_epoch = 0u64;
+                let mut active_listeners: std::collections::HashMap<u16, tokio::task::JoinHandle<()>> = std::collections::HashMap::new();
 
                 loop {
-                    match kcp_listener.accept().await {
-                        Ok((mut kcp_stream, addr)) => {
-                            let token_clone = token_owned.clone();
-                            let control_tx_clone = control_tx.clone();
-                            tokio::spawn(async move {
-                                // Wait for Client authentication header over reliable KCP
-                                use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                                let token_auth = format!("Cheragh-Auth {}", token_clone);
-                                let mut buf = vec![0u8; token_auth.len()];
-                                if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), kcp_stream.read_exact(&mut buf)).await {
-                                    let auth_str = String::from_utf8_lossy(&buf);
-                                    if auth_str == token_auth {
-                                        // Send ACK back to the client
-                                        if kcp_stream.write_all(b"ACK").await.is_ok() && kcp_stream.flush().await.is_ok() {
-                                            println!("[SERVER] Authentic client connected from: {} (FakeTCP/KCP)", addr);
-                                            let _ = control_tx_clone.send(TransportStream::Kcp(kcp_stream)).await;
-                                        }
-                                    }
-                                }
-                            });
+                    let epoch = std::time::SystemTime::now()
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() / 300;
+
+                    if epoch != current_epoch {
+                        current_epoch = epoch;
+                        let p_curr = get_hopped_port(control_port, &token_owned, epoch);
+                        let p_next = get_hopped_port(control_port, &token_owned, epoch + 1);
+
+                        // Start p_curr if not active
+                        if !active_listeners.contains_key(&p_curr) {
+                            let handle = spawn_protocol_listener(p_curr, protocol_owned.clone(), token_owned.clone(), decoy_owned.clone(), control_tx.clone());
+                            active_listeners.insert(p_curr, handle);
                         }
-                        Err(e) => {
-                            eprintln!("[SERVER] FakeTCP Kcp listener error: {}", e);
-                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                        // Start p_next if not active
+                        if !active_listeners.contains_key(&p_next) {
+                            let handle = spawn_protocol_listener(p_next, protocol_owned.clone(), token_owned.clone(), decoy_owned.clone(), control_tx.clone());
+                            active_listeners.insert(p_next, handle);
                         }
-                    }
-                }
-            } else if is_udp_protocol(&protocol_owned) {
-                // --- UDP Control Protocol Server ---
-                let mode = get_udp_mode(&protocol_owned);
-                let control_addr = format!("0.0.0.0:{}", control_port);
-                let socket = match UdpSocket::bind(&control_addr).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("[SERVER] Failed to bind UDP control port {}: {}", control_port, e);
-                        return;
-                    }
-                };
-                
-                println!("[SERVER] Listening for UDP control packets on port: {}", control_port);
-                
-                let (new_conn_tx, mut new_conn_rx) = mpsc::channel::<UdpVirtualStream>(100);
-                let _multiplexer = UdpMultiplexer::new(socket, mode, new_conn_tx);
-                
-                let token_auth = format!("Cheragh-Auth {}", token_owned);
-                let control_tx_clone = control_tx.clone();
-                tokio::spawn(async move {
-                    while let Some(mut stream) = new_conn_rx.recv().await {
-                        let token_auth_clone = token_auth.clone();
-                        let control_tx_clone_inner = control_tx_clone.clone();
-                        
-                        tokio::spawn(async move {
-                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                            let mut buf = vec![0u8; token_auth_clone.len()];
-                            if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read_exact(&mut buf)).await {
-                                let auth_str = String::from_utf8_lossy(&buf);
-                                if auth_str == token_auth_clone {
-                                    if stream.write_all(b"ACK").await.is_ok() && stream.flush().await.is_ok() {
-                                        println!("[SERVER] Authentic client connected (UDP)");
-                                        let _ = control_tx_clone_inner.send(TransportStream::Udp(stream)).await;
-                                    }
+
+                        // Evict old listeners
+                        let active_ports: Vec<u16> = active_listeners.keys().cloned().collect();
+                        for p in active_ports {
+                            if p != p_curr && p != p_next {
+                                if let Some(h) = active_listeners.remove(&p) {
+                                    h.abort();
                                 }
                             }
-                        });
+                        }
                     }
-                });
-            } else {
-                // --- TCP/TLS/WS Control Protocol Server ---
-                let control_addr = format!("0.0.0.0:{}", control_port);
-                let control_listener = match tokio::net::TcpListener::bind(&control_addr).await {
-                    Ok(l) => l,
-                    Err(e) => {
-                        eprintln!("[SERVER] Failed to bind control port {}: {}", control_port, e);
-                        return;
-                    }
-                };
-                
-                println!("[SERVER] Listening for TCP control connections on port: {}", control_port);
-                
-                loop {
-                    match control_listener.accept().await {
-                        Ok((control_socket, addr)) => {
-                            let _ = crate::common::network::optimize_socket(&control_socket);
-                            let proto_clone = protocol_owned.clone();
-                            let token_clone = token_owned.clone();
-                            let decoy_clone = decoy_owned.clone();
-                            let control_tx_clone = control_tx.clone();
 
-                            tokio::spawn(async move {
-                                match server_handshake(control_socket, &proto_clone, &token_clone, decoy_clone).await {
-                                    Ok(s) => {
-                                        println!("[SERVER] Authentic client connected from: {}", addr);
-                                        if control_tx_clone.send(s).await.is_err() {
-                                            eprintln!("[SERVER] Control channel closed, dropping node stream");
-                                        }
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[SERVER] Handshake failed from {}: {}", addr, e);
-                                    }
-                                }
-                            });
-                        }
-                        Err(e) => {
-                            eprintln!("[SERVER] Control listener error: {}", e);
-                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                        }
-                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
+            } else {
+                let handle = spawn_protocol_listener(control_port, protocol_owned, token_owned, decoy_owned, control_tx);
+                let _ = handle.await;
             }
         })),
     };
@@ -233,9 +304,96 @@ pub async fn run_server(
         })),
     };
 
-    // Main loop: accept public user connections and pair each with a yamux logical stream from the active pool in a Round-Robin fashion
-    let mut rr_index = 0;
+    // Background task to run public UDP relay listener
+    let active_controls_udp = active_controls.clone();
+    let rr_index_udp = rr_index.clone();
+    let _udp_relay_guard = LoopGuard {
+        handle: Some(tokio::spawn(async move {
+            let public_udp_addr = format!("0.0.0.0:{}", public_port);
+            let socket = match UdpSocket::bind(&public_udp_addr).await {
+                Ok(s) => Arc::new(s),
+                Err(e) => {
+                    eprintln!("[SERVER-UDP] Failed to bind public UDP port {}: {}", public_port, e);
+                    return;
+                }
+            };
+            
+            println!("[SERVER-UDP] Listening for public UDP traffic on port: {}", public_port);
+            
+            let mut buf = vec![0u8; 65535];
+            let sessions: Arc<tokio::sync::Mutex<HashMap<std::net::SocketAddr, mpsc::Sender<Vec<u8>>>>> = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+            
+            while let Ok((n, user_addr)) = socket.recv_from(&mut buf).await {
+                let data = buf[..n].to_vec();
+                let mut map = sessions.lock().await;
+                
+                if let Some(tx) = map.get(&user_addr) {
+                    let _ = tx.send(data).await;
+                } else {
+                    let pool = active_controls_udp.lock().await;
+                    if pool.is_empty() {
+                        continue;
+                    }
+                    
+                    let idx = rr_index_udp.fetch_add(1, Ordering::SeqCst);
+                    let mut ctrl = pool[idx % pool.len()].clone();
+                    drop(pool);
+                    
+                    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1000);
+                    map.insert(user_addr, tx.clone());
+                    let sessions_clone = sessions.clone();
+                    let socket_clone = socket.clone();
+                    
+                    tokio::spawn(async move {
+                        if let Ok(stream) = ctrl.open_stream().await {
+                            use tokio::io::AsyncWriteExt;
+                            let mut compat_stream = stream.compat();
+                            if compat_stream.write_all(b"UDP\n").await.is_ok() {
+                                let (mut reader, mut writer) = tokio::io::split(compat_stream);
+                                
+                                let mut rx_task = tokio::spawn(async move {
+                                    while let Some(pkt) = rx.recv().await {
+                                        let len_bytes = (pkt.len() as u32).to_be_bytes();
+                                        if writer.write_all(&len_bytes).await.is_err() || writer.write_all(&pkt).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                });
+                                
+                                let socket_clone2 = socket_clone.clone();
+                                let mut tx_task = tokio::spawn(async move {
+                                    use tokio::io::AsyncReadExt;
+                                    let mut len_buf = [0u8; 4];
+                                    loop {
+                                        if tokio::time::timeout(tokio::time::Duration::from_secs(30), reader.read_exact(&mut len_buf)).await.is_err() {
+                                            break;
+                                        }
+                                        let len = u32::from_be_bytes(len_buf) as usize;
+                                        let mut pkt_buf = vec![0u8; len];
+                                        if reader.read_exact(&mut pkt_buf).await.is_err() {
+                                            break;
+                                        }
+                                        let _ = socket_clone2.send_to(&pkt_buf, user_addr).await;
+                                    }
+                                });
+                                
+                                tokio::select! {
+                                    _ = &mut rx_task => { tx_task.abort(); }
+                                    _ = &mut tx_task => { rx_task.abort(); }
+                                }
+                            }
+                        }
+                        let mut map = sessions_clone.lock().await;
+                        map.remove(&user_addr);
+                    });
+                    
+                    let _ = tx.send(data).await;
+                }
+            }
+        })),
+    };
 
+    // Main loop: accept public user connections and pair each with a yamux logical stream from the active pool in a Round-Robin fashion
     while let Ok((user_socket, user_addr)) = public_listener.accept().await {
         let _ = crate::common::network::optimize_socket(&user_socket);
         
@@ -257,14 +415,13 @@ pub async fn run_server(
             }
             
             // Pick next control in round-robin fashion
-            let idx = rr_index % pool.len();
+            let idx = rr_index.fetch_add(1, Ordering::SeqCst) % pool.len();
             let mut ctrl = pool[idx].clone();
             drop(pool); // Release lock while we open the stream to avoid blocking other handshakes
             
             match ctrl.open_stream().await {
                 Ok(s) => {
                     stream_result = Some(s);
-                    rr_index += 1;
                     break;
                 }
                 Err(_) => {
@@ -299,6 +456,7 @@ pub async fn run_client(
     protocol: &str,
     tunnel_id: i64,
     decoy: Option<String>,
+    port_hopping: bool,
 ) -> Result<(), Box<dyn Error>> {
     let ips: Vec<&str> = server_ips
         .split(',')
@@ -310,219 +468,294 @@ pub async fn run_client(
         return Err("No server IPs provided".into());
     }
 
-    let mut ip_index = 0;
-    let mut dynamic_mtu = 1350;
+    let parallel_connections = 3;
+    let mut handles = Vec::new();
 
-    loop {
-        let current_ip = ips[ip_index % ips.len()];
-        println!(
-            "[CLIENT] Connecting to Iran Server {}:{} via '{}' (Failover index: {})...",
-            current_ip, control_port, protocol, ip_index
-        );
-        let control_addr = format!("{}:{}", current_ip, control_port);
+    for worker_id in 0..parallel_connections {
+        let ips_clone: Vec<String> = ips.iter().map(|s| s.to_string()).collect();
+        let local_service_clone = local_service.to_string();
+        let token_clone = token.to_string();
+        let protocol_clone = protocol.to_string();
+        let decoy_clone = decoy.clone();
 
-        let mut control_socket = if is_faketcp_protocol(protocol) {
-            println!("[CLIENT] Connecting via FakeTCP (KCP) to {} with MTU {}...", control_addr, dynamic_mtu);
-            let mut config = kcp_tokio::KcpConfig::new().turbo_mode().stream_mode(true);
-            config.snd_wnd = 2048;
-            config.rcv_wnd = 2048;
-            config.mtu = dynamic_mtu;
-            config.nodelay.resend = 2;
-            config.socket_buffer_size = Some(1024 * 1024 * 8);
-            let mut client = crate::tunnel::faketcp::FakeTcpClient::new(control_addr.parse().unwrap());
-            
-            match client.connect(config).await {
-                Ok(mut s) => {
-                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                    let auth = format!("Cheragh-Auth {}", token);
-                    if s.write_all(auth.as_bytes()).await.is_err() || s.flush().await.is_err() {
-                        eprintln!("[CLIENT] Failed to write auth token to FakeTCP stream");
-                        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                        continue;
-                    }
-                    let mut ack = [0u8; 3];
-                    match tokio::time::timeout(tokio::time::Duration::from_secs(5), s.read_exact(&mut ack)).await {
-                        Ok(Ok(_)) if &ack == b"ACK" => {
-                            // Reset MTU back to optimum on success
-                            dynamic_mtu = 1350;
-                            TransportStream::Kcp(s)
+        let handle = tokio::spawn(async move {
+            let mut ip_index = 0;
+            let mut dynamic_mtu = 1350;
+
+            loop {
+                let current_ip = &ips_clone[ip_index % ips_clone.len()];
+                let active_control_port = if port_hopping {
+                    let epoch = std::time::SystemTime::now()
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() / 300;
+                    get_hopped_port(control_port, &token_clone, epoch)
+                } else {
+                    control_port
+                };
+
+                println!(
+                    "[CLIENT-WORKER-{}] Connecting to Iran Server {}:{} via '{}' (Failover index: {})...",
+                    worker_id, current_ip, active_control_port, protocol_clone, ip_index
+                );
+                let control_addr = format!("{}:{}", current_ip, active_control_port);
+
+                let mut control_socket = if is_faketcp_protocol(&protocol_clone) {
+                    println!("[CLIENT-WORKER-{}] Connecting via FakeTCP (KCP) to {} with MTU {}...", worker_id, control_addr, dynamic_mtu);
+                    let mut config = kcp_tokio::KcpConfig::new().turbo_mode().stream_mode(true);
+                    config.snd_wnd = 2048;
+                    config.rcv_wnd = 2048;
+                    config.mtu = dynamic_mtu;
+                    config.nodelay.resend = 2;
+                    config.socket_buffer_size = Some(1024 * 1024 * 8);
+                    let mut client = crate::tunnel::faketcp::FakeTcpClient::new(control_addr.parse().unwrap());
+                    
+                    match client.connect(config).await {
+                        Ok(mut s) => {
+                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                            let auth = format!("Cheragh-Auth {}", token_clone);
+                            if s.write_all(auth.as_bytes()).await.is_err() || s.flush().await.is_err() {
+                                eprintln!("[CLIENT-WORKER-{}] Failed to write auth token to FakeTCP stream", worker_id);
+                                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                                continue;
+                            }
+                            let mut ack = [0u8; 3];
+                            match tokio::time::timeout(tokio::time::Duration::from_secs(5), s.read_exact(&mut ack)).await {
+                                Ok(Ok(_)) if &ack == b"ACK" => {
+                                    dynamic_mtu = 1350;
+                                    TransportStream::Kcp(s)
+                                }
+                                _ => {
+                                    eprintln!("[CLIENT-WORKER-{}] FakeTCP KCP authentication failed on server {}", worker_id, current_ip);
+                                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                                    continue;
+                                }
+                            }
                         }
-                        _ => {
-                            eprintln!("[CLIENT] FakeTCP KCP authentication failed on server {}", current_ip);
-                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                        Err(e) => {
+                            eprintln!("[CLIENT-WORKER-{}] Failed to establish FakeTCP KCP connection: {}. Calibrating PMTUD...", worker_id, e);
+                            dynamic_mtu = if dynamic_mtu > 1200 { dynamic_mtu - 50 } else { 1350 };
+                            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
                             continue;
                         }
                     }
-                }
-                Err(e) => {
-                    eprintln!("[CLIENT] Failed to establish FakeTCP KCP connection: {}. Calibrating PMTUD...", e);
-                    // Decrement MTU to adapt to network packet fragmentation drops
-                    dynamic_mtu = if dynamic_mtu > 1200 { dynamic_mtu - 50 } else { 1350 };
-                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                    continue;
-                }
-            }
-        } else if is_udp_protocol(protocol) {
-            // --- UDP Client Transport ---
-            let socket = match UdpSocket::bind("0.0.0.0:0").await {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("[CLIENT] Failed to bind local UDP socket: {}", e);
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                    continue;
-                }
-            };
-            if let Err(e) = socket.connect(format!("{}:{}", current_ip, control_port)).await {
-                eprintln!("[CLIENT] Failed to connect UDP socket to {}:{}: {}", current_ip, control_port, e);
-                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                ip_index += 1;
-                continue;
-            }
-            let socket = Arc::new(socket);
-            let (tx, rx) = mpsc::channel(1024);
-            
-            let mode = get_udp_mode(protocol);
-            let peer_addr = match format!("{}:{}", current_ip, control_port).parse() {
-                Ok(addr) => addr,
-                Err(e) => {
-                    eprintln!("[CLIENT] Invalid target address: {}", e);
-                    return Err(Box::new(e));
-                }
-            };
-            let mut stream = UdpVirtualStream::new(socket.clone(), peer_addr, mode, rx, false);
-
-            let socket_clone = socket.clone();
-            let recv_handle = tokio::spawn(async move {
-                let mut buf = vec![0u8; 65535];
-                while let Ok((n, _)) = socket_clone.recv_from(&mut buf).await {
-                    if tx.send(buf[..n].to_vec()).await.is_err() {
-                        break;
-                    }
-                }
-            });
-            stream.recv_handle = Some(recv_handle);
-            
-            if mode != UdpMode::Ray {
-                // Send SYN handshake packet
-                {
-                    let mut inner = stream.inner.lock().await;
-                    inner.send_syn().await;
-                }
-                
-                // Wait for SYN_ACK from server
-                let start = Instant::now();
-                let mut success = false;
-                while start.elapsed() < Duration::from_secs(5) {
-                    let done = {
-                        let inner = stream.inner.lock().await;
-                        inner.handshake_done
+                } else if is_udp_protocol(&protocol_clone) {
+                    let socket = match UdpSocket::bind("0.0.0.0:0").await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("[CLIENT-WORKER-{}] Failed to bind local UDP socket: {}", worker_id, e);
+                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                            continue;
+                        }
                     };
-                    if done {
-                        success = true;
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-
-                if !success {
-                    eprintln!("[CLIENT] UDP connection handshake timeout with {}", current_ip);
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                    ip_index += 1;
-                    continue;
-                }
-
-                // Send authentication PSK header
-                let auth = format!("Cheragh-Auth {}", token);
-                if stream.write_all(auth.as_bytes()).await.is_err() || stream.flush().await.is_err() {
-                    eprintln!("[CLIENT] Failed to write auth token to UDP stream");
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                    ip_index += 1;
-                    continue;
-                }
-
-                // Read ACK response
-                let mut ack = [0u8; 3];
-                match tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut ack)).await {
-                    Ok(Ok(_)) if &ack == b"ACK" => {
-                        // Handshake fully verified
-                    }
-                    _ => {
-                        eprintln!("[CLIENT] UDP authentication failed on server {}", current_ip);
+                    if let Err(e) = socket.connect(format!("{}:{}", current_ip, active_control_port)).await {
+                        eprintln!("[CLIENT-WORKER-{}] Failed to connect UDP socket to {}:{}: {}", worker_id, current_ip, active_control_port, e);
                         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                         ip_index += 1;
                         continue;
                     }
-                }
-            }
+                    let socket = Arc::new(socket);
+                    let (tx, rx) = mpsc::channel(1024);
+                    
+                    let mode = get_udp_mode(&protocol_clone);
+                    let peer_addr = match format!("{}:{}", current_ip, active_control_port).parse() {
+                        Ok(addr) => addr,
+                        Err(e) => {
+                            eprintln!("[CLIENT-WORKER-{}] Invalid target address: {}", worker_id, e);
+                            return;
+                        }
+                    };
+                    let mut stream = UdpVirtualStream::new(socket.clone(), peer_addr, mode, rx, false);
 
-            TransportStream::Udp(stream)
-        } else {
-            // --- TCP Client Transport ---
-            let tcp_socket = match TcpStream::connect(format!("{}:{}", current_ip, control_port)).await {
-                Ok(s) => {
-                    let _ = crate::common::network::optimize_socket(&s);
-                    s
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[CLIENT] Connection to {} failed: {}. Trying next IP in 3s...",
-                        current_ip, e
-                    );
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                    ip_index += 1;
-                    continue;
-                }
-            };
-
-            match client_handshake(tcp_socket, protocol, token, decoy.clone()).await {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!(
-                        "[CLIENT] Handshake failed on {}: {}. Trying next IP in 3s...",
-                        current_ip, e
-                    );
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                    ip_index += 1;
-                    continue;
-                }
-            }
-        };
-
-        println!("[CLIENT] Handshake succeeded over '{}'", protocol);
-        println!("[CLIENT] Establishing Yamux Multiplexer Session...");
-
-        let mut cfg = yamux::Config::default();
-        cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
-        cfg.set_max_buffer_size(1024 * 1024 * 4);
-        let conn = yamux::Connection::new(control_socket.compat(), cfg, yamux::Mode::Server);
-        let mut incoming = Box::pin(yamux::into_stream(conn));
-
-        while let Some(stream_res) = incoming.next().await {
-            match stream_res {
-                Ok(stream) => {
-                    let local_service = local_service.to_string();
-                    let tid = tunnel_id;
-                    tokio::spawn(async move {
-                        match connect_to_local(&local_service).await {
-                            Ok(local_conn) => {
-                                let _ = crate::common::network::optimize_socket(&local_conn);
-                                pipe_streams_monitored(stream.compat(), local_conn, tid).await;
-                            }
-                            Err(e) => {
-                                eprintln!("[CLIENT] Failed to connect to local service at {}: {}", local_service, e);
+                    let socket_clone = socket.clone();
+                    let recv_handle = tokio::spawn(async move {
+                        let mut buf = vec![0u8; 65535];
+                        while let Ok((n, _)) = socket_clone.recv_from(&mut buf).await {
+                            if tx.send(buf[..n].to_vec()).await.is_err() {
+                                break;
                             }
                         }
                     });
-                }
-                Err(e) => {
-                    eprintln!("[CLIENT] Yamux connection error: {}", e);
-                    break;
-                }
-            }
-        }
+                    stream.recv_handle = Some(recv_handle);
+                    
+                    if mode != UdpMode::Ray {
+                        {
+                            let mut inner = stream.inner.lock().await;
+                            inner.send_syn().await;
+                        }
+                        
+                        let start = Instant::now();
+                        let mut success = false;
+                        while start.elapsed() < Duration::from_secs(5) {
+                            let done = {
+                                let inner = stream.inner.lock().await;
+                                inner.handshake_done
+                            };
+                            if done {
+                                success = true;
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
 
-        ip_index = 0;
-        println!("[CLIENT] Yamux session ended. Reconnecting in 3s...");
-        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                        if !success {
+                            eprintln!("[CLIENT-WORKER-{}] UDP connection handshake timeout with {}", worker_id, current_ip);
+                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                            ip_index += 1;
+                            continue;
+                        }
+
+                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                        let auth = format!("Cheragh-Auth {}", token_clone);
+                        if stream.write_all(auth.as_bytes()).await.is_err() || stream.flush().await.is_err() {
+                            eprintln!("[CLIENT-WORKER-{}] Failed to write auth token to UDP stream", worker_id);
+                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                            ip_index += 1;
+                            continue;
+                        }
+
+                        let mut ack = [0u8; 3];
+                        match tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut ack)).await {
+                            Ok(Ok(_)) if &ack == b"ACK" => {}
+                            _ => {
+                                eprintln!("[CLIENT-WORKER-{}] UDP authentication failed on server {}", worker_id, current_ip);
+                                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                                ip_index += 1;
+                                continue;
+                            }
+                        }
+                    }
+
+                    TransportStream::Udp(stream)
+                } else {
+                    let tcp_socket = match TcpStream::connect(format!("{}:{}", current_ip, control_port)).await {
+                        Ok(s) => {
+                            let _ = crate::common::network::optimize_socket(&s);
+                            s
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[CLIENT-WORKER-{}] Connection to {} failed: {}. Trying next IP in 3s...",
+                                worker_id, current_ip, e
+                            );
+                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                            ip_index += 1;
+                            continue;
+                        }
+                    };
+
+                    match client_handshake(tcp_socket, &protocol_clone, &token_clone, decoy_clone.clone()).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!(
+                                "[CLIENT-WORKER-{}] Handshake failed on {}: {}. Trying next IP in 3s...",
+                                worker_id, current_ip, e
+                            );
+                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                            ip_index += 1;
+                            continue;
+                        }
+                    }
+                };
+
+                println!("[CLIENT-WORKER-{}] Handshake succeeded over '{}'", worker_id, protocol_clone);
+                println!("[CLIENT-WORKER-{}] Establishing Yamux Multiplexer Session...", worker_id);
+
+                let mut cfg = yamux::Config::default();
+                cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
+                cfg.set_max_buffer_size(1024 * 1024 * 4);
+                let conn = yamux::Connection::new(control_socket.compat(), cfg, yamux::Mode::Server);
+                let mut incoming = Box::pin(yamux::into_stream(conn));
+
+                while let Some(stream_res) = incoming.next().await {
+                    match stream_res {
+                        Ok(stream) => {
+                            let l_service = local_service_clone.clone();
+                            let tid = tunnel_id;
+                            tokio::spawn(async move {
+                                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                                let mut compat_stream = stream.compat();
+                                let mut prefix = [0u8; 4];
+                                let mut is_udp = false;
+                                if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_millis(100), compat_stream.read_exact(&mut prefix)).await {
+                                    if &prefix == b"UDP\n" {
+                                        is_udp = true;
+                                    }
+                                }
+                                
+                                if is_udp {
+                                    let socket = match UdpSocket::bind("0.0.0.0:0").await {
+                                        Ok(s) => s,
+                                        Err(_) => return,
+                                    };
+                                    let target_addr = match l_service.parse::<std::net::SocketAddr>() {
+                                        Ok(a) => a,
+                                        Err(_) => return,
+                                    };
+                                    let _ = socket.connect(target_addr).await;
+                                    let socket = Arc::new(socket);
+                                    let (mut reader, mut writer) = tokio::io::split(compat_stream);
+                                    
+                                    let socket_clone = socket.clone();
+                                    let mut tx_task = tokio::spawn(async move {
+                                        let mut len_buf = [0u8; 4];
+                                        loop {
+                                            if reader.read_exact(&mut len_buf).await.is_err() {
+                                                break;
+                                            }
+                                            let len = u32::from_be_bytes(len_buf) as usize;
+                                            let mut pkt_buf = vec![0u8; len];
+                                            if reader.read_exact(&mut pkt_buf).await.is_err() {
+                                                break;
+                                            }
+                                            let _ = socket_clone.send(&pkt_buf).await;
+                                        }
+                                    });
+                                    
+                                    let mut rx_task = tokio::spawn(async move {
+                                        let mut buf = vec![0u8; 65535];
+                                        while let Ok(n) = socket.recv(&mut buf).await {
+                                            let len_bytes = (n as u32).to_be_bytes();
+                                            if writer.write_all(&len_bytes).await.is_err() || writer.write_all(&buf[..n]).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                    });
+                                    
+                                    tokio::select! {
+                                        _ = &mut tx_task => { rx_task.abort(); }
+                                        _ = &mut rx_task => { tx_task.abort(); }
+                                    }
+                                } else {
+                                    match connect_to_local(&l_service).await {
+                                        Ok(mut local_conn) => {
+                                            let _ = crate::common::network::optimize_socket(&local_conn);
+                                            let _ = local_conn.write_all(&prefix).await;
+                                            pipe_streams_monitored(compat_stream, local_conn, tid).await;
+                                        }
+                                        Err(e) => {
+                                            eprintln!("[CLIENT] Failed to connect to local service at {}: {}", l_service, e);
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            eprintln!("[CLIENT-WORKER-{}] Yamux connection error: {}", worker_id, e);
+                            break;
+                        }
+                    }
+                }
+
+                ip_index = 0;
+                println!("[CLIENT-WORKER-{}] Yamux session ended. Reconnecting in 3s...", worker_id);
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+            }
+        });
+
+        handles.push(handle);
     }
+
+    futures::future::join_all(handles).await;
+    Ok(())
 }

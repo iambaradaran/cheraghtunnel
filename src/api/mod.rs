@@ -103,7 +103,7 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
         login_limiter: LoginRateLimiter::new(),
     });
 
-    // Spawn background speed stats flusher
+    // Spawn background speed stats flusher and limits synchronization task
     let db_path_clone = db_path.clone();
     tokio::spawn(async move {
         loop {
@@ -117,9 +117,17 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
                     let rx_bytes = tracker.rx_bytes.swap(0, std::sync::atomic::Ordering::SeqCst);
                     let tx_bytes = tracker.tx_bytes.swap(0, std::sync::atomic::Ordering::SeqCst);
                     
-                    // Update live speed snapshot and add to cumulative total
+                    // Update live speed snapshot and add to cumulative total in DB
                     if let Err(e) = db::update_tunnel_speeds(&db_path_clone, *id, rx_bytes, tx_bytes) {
                         eprintln!("Failed to update speeds for tunnel {}: {}", id, e);
+                    }
+
+                    // Sync limits from database dynamically
+                    if let Ok(Some(tunnel)) = db::get_tunnel_by_id(&db_path_clone, *id) {
+                        let total_used = tunnel.stats_rx + tunnel.stats_tx;
+                        tracker.quota_limit.store(tunnel.quota_limit_bytes.unwrap_or(0) as u64, std::sync::atomic::Ordering::Relaxed);
+                        tracker.quota_used.store(total_used, std::sync::atomic::Ordering::Relaxed);
+                        tracker.speed_limit.store(tunnel.speed_limit_kbps.unwrap_or(0) as u32, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
@@ -195,6 +203,7 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
         .route("/api/tunnels/:id/toggle", post(toggle_tunnel_handler))
         .route("/api/tunnels/:id/deploy", post(deploy_tunnel_handler))
         .route("/api/tunnels/:id/telemetry", get(telemetry_handler))
+        .route("/api/tunnels/:id/clone-decoy", post(clone_decoy_handler))
         .route("/api/stats", get(stats_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
@@ -334,6 +343,56 @@ async fn telemetry_handler(
     }
 }
 
+#[derive(Deserialize)]
+struct CloneDecoyPayload {
+    url: String,
+}
+
+async fn clone_decoy_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Path(_id): axum::extract::Path<i64>,
+    Json(payload): Json<CloneDecoyPayload>,
+) -> impl IntoResponse {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+    let client = match client {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response(),
+    };
+
+    match client.get(&payload.url).send().await {
+        Ok(response) => {
+            if let Ok(body) = response.text().await {
+                let without_proto = if let Some(stripped) = payload.url.strip_prefix("https://") {
+                    stripped
+                } else if let Some(stripped) = payload.url.strip_prefix("http://") {
+                    stripped
+                } else {
+                    &payload.url
+                };
+                let host = without_proto.split('/').next().unwrap_or(&payload.url);
+                let domain = host.split(':').next().unwrap_or(host).to_string();
+
+                let dir_path = std::path::Path::new("static/decoys");
+                if let Err(e) = std::fs::create_dir_all(dir_path) {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(format!("Failed to create decoy dir: {}", e))).into_response();
+                }
+
+                let file_path = dir_path.join(format!("{}.html", domain));
+                if let Err(e) = std::fs::write(file_path, body) {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(format!("Failed to write decoy file: {}", e))).into_response();
+                }
+
+                (StatusCode::OK, Json("Successfully cloned decoy website!")).into_response()
+            } else {
+                (StatusCode::BAD_REQUEST, Json("Failed to read response body text")).into_response()
+            }
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, Json(format!("Failed to fetch decoy: {}", e))).into_response(),
+    }
+}
+
 // Tunnel Management Handlers
 async fn get_tunnels_handler(Extension(state): Extension<Arc<AppState>>) -> impl IntoResponse {
     match db::get_tunnels(&state.db_path) {
@@ -448,6 +507,8 @@ async fn start_tunnel_server(state: Arc<AppState>, tunnel: &db::Tunnel, id: i64)
     let public_port = tunnel.iran_port;
     let decoy = tunnel.decoy_url.clone();
 
+    let port_hopping = tunnel.port_hopping.unwrap_or(0) == 1;
+
     // Create pool for Round-Robin load balancing across multiple nodes
     let active_controls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let active_controls_clone = active_controls.clone();
@@ -456,7 +517,7 @@ async fn start_tunnel_server(state: Arc<AppState>, tunnel: &db::Tunnel, id: i64)
     let proto_spawn = protocol.clone();
     let state_clone = state.clone();
     let handle = tokio::spawn(async move {
-        if let Err(e) = crate::tunnel::run_server(control_port, public_port, &token, &proto_spawn, decoy, id, active_controls_clone).await {
+        if let Err(e) = crate::tunnel::run_server(control_port, public_port, &token, &proto_spawn, decoy, id, active_controls_clone, port_hopping).await {
             eprintln!("Background tunnel server daemon error: {}", e);
         }
         let _ = db::update_tunnel_status(&state_clone.db_path, id, "inactive");
