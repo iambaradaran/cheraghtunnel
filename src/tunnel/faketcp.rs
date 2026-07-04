@@ -108,7 +108,7 @@ impl FakeTcpClient {
 
         let guard = Arc::new(IptablesGuard::new(self.local_port));
 
-        let (tx, mut rx) = transport_channel(65535, TransportChannelType::Layer3(IpNextHeaderProtocols::Tcp)).unwrap();
+        let (tx, mut rx) = transport_channel(8 * 1024 * 1024, TransportChannelType::Layer3(IpNextHeaderProtocols::Tcp)).unwrap();
         
         let client_seq = rand::thread_rng().gen::<u32>();
         let last_seen_seq = Arc::new(AtomicU32::new(1000));
@@ -207,7 +207,7 @@ impl FakeTcpServer {
         let kcp_listener = KcpListener::bind(kcp_addr, config).await.map_err(|e| e.to_string())?;
         let kcp_local_udp = *kcp_listener.local_addr();
 
-        let (tx, mut rx) = transport_channel(65535, TransportChannelType::Layer3(IpNextHeaderProtocols::Tcp)).unwrap();
+        let (tx, mut rx) = transport_channel(8 * 1024 * 1024, TransportChannelType::Layer3(IpNextHeaderProtocols::Tcp)).unwrap();
         
         let local_port = self.local_port;
         
