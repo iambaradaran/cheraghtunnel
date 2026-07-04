@@ -530,6 +530,8 @@ fn generate_node_script(tunnel: &db::Tunnel, id: i64, host: &str) -> String {
             ips = format!("{},{}", host, backups);
         }
     }
+    
+    let decoy = tunnel.decoy_url.clone().unwrap_or_else(|| "google.com".to_string());
 
     format!(
         r#"#!/bin/bash
@@ -543,6 +545,7 @@ LOCAL_PORT="{}"
 TOKEN="{}"
 PROTOCOL="{}"
 TUNNEL_ID="{}"
+DECOY="{}"
 
 echo "=================================================="
 echo "  Installing CheraghTunnel Client Node..."
@@ -604,7 +607,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/cheraghtunnel client -s $IRAN_IP -c $CONTROL_PORT -p $PUBLIC_PORT -l 127.0.0.1:$LOCAL_PORT -t $TOKEN --protocol $PROTOCOL --tunnel-id $TUNNEL_ID
+ExecStart=/usr/local/bin/cheraghtunnel client -s $IRAN_IP -c $CONTROL_PORT -p $PUBLIC_PORT -l 127.0.0.1:$LOCAL_PORT -t $TOKEN --protocol $PROTOCOL --tunnel-id $TUNNEL_ID --decoy "$DECOY"
 Restart=always
 User=root
 
@@ -617,7 +620,7 @@ systemctl enable cheragh-node-$TUNNEL_ID
 systemctl start cheragh-node-$TUNNEL_ID
 echo "Setup completed successfully!"
 "#,
-        ips, tunnel.control_port, tunnel.iran_port, tunnel.kharej_port, tunnel.token, tunnel.protocol, id
+        ips, tunnel.control_port, tunnel.iran_port, tunnel.kharej_port, tunnel.token, tunnel.protocol, id, decoy
     )
 }
 

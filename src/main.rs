@@ -77,6 +77,10 @@ enum Commands {
         /// Tunnel ID for tracking traffic speeds
         #[arg(long, default_value_t = 0)]
         tunnel_id: i64,
+
+        /// Custom decoy website URL (SNI) for TLS/WSS protocols
+        #[arg(long)]
+        decoy: Option<String>,
     },
 }
 
@@ -121,10 +125,11 @@ async fn main() {
             token,
             protocol,
             tunnel_id,
+            decoy,
         } => {
             println!("Starting CheraghTunnel Client connecting to {}:{} forwarding to {}...",
                      server_ip, control_port, local_service);
-            if let Err(e) = tunnel::run_client(&server_ip, control_port, public_port, &local_service, &token, &protocol, tunnel_id).await {
+            if let Err(e) = tunnel::run_client(&server_ip, control_port, public_port, &local_service, &token, &protocol, tunnel_id, decoy).await {
                 eprintln!("Client tunnel error: {}", e);
                 std::process::exit(1);
             }

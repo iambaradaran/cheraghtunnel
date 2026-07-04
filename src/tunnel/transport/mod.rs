@@ -513,7 +513,9 @@ pub async fn client_handshake(
     mut socket: TcpStream,
     protocol: &str,
     token: &str,
+    decoy: Option<String>,
 ) -> Result<TransportStream, Box<dyn Error + Send + Sync>> {
+    let decoy_str = decoy.unwrap_or_else(|| "google.com".to_string());
     match protocol {
         "beam" | "tcpmux" | "photon" | "quantummux" => {
             let auth = format!("{}{}", PSK_HEADER_PREFIX, token);
@@ -529,11 +531,11 @@ pub async fn client_handshake(
         "aura" | "httpmux" => {
             let req = format!(
                 "GET /tunnel HTTP/1.1\r\n\
-                 Host: localhost\r\n\
+                 Host: {}\r\n\
                  Upgrade: websocket\r\n\
                  Connection: Upgrade\r\n\
                  Authorization: {}{}\r\n\r\n",
-                PSK_HEADER_PREFIX, token
+                decoy_str, PSK_HEADER_PREFIX, token
             );
             socket.write_all(req.as_bytes()).await?;
             socket.flush().await?;
@@ -550,14 +552,14 @@ pub async fn client_handshake(
             Ok(TransportStream::ObfuscatedWs(ObfuscatedStream::new(WsByteStream::new(ws_stream))))
         }
         "glimmer" | "wsmux" => {
-            let ws_url = format!("ws://localhost/ws?token={}", token);
+            let ws_url = format!("ws://{}/ws?token={}", decoy_str, token);
             let (ws_stream, _) = tokio_tungstenite::client_async(ws_url, socket).await?;
             Ok(TransportStream::Ws(WsByteStream::new(ws_stream)))
         }
         "nova" | "httpsmux" => {
             let config = create_client_tls_config();
             let connector = TlsConnector::from(Arc::new(config));
-            let domain = ServerName::try_from("localhost")?.to_owned();
+            let domain = ServerName::try_from(decoy_str.as_str())?.to_owned();
             let tls_stream = connector.connect(domain, socket).await?;
             
             let mut stream = TransportStream::TlsClient(tls_stream);
@@ -574,10 +576,10 @@ pub async fn client_handshake(
         "beacon" | "wssmux" => {
             let config = create_client_tls_config();
             let connector = TlsConnector::from(Arc::new(config));
-            let domain = ServerName::try_from("localhost")?.to_owned();
+            let domain = ServerName::try_from(decoy_str.as_str())?.to_owned();
             let tls_stream = connector.connect(domain, socket).await?;
             
-            let ws_url = format!("wss://localhost/wss?token={}", token);
+            let ws_url = format!("wss://{}/wss?token={}", decoy_str, token);
             let (ws_stream, _) = tokio_tungstenite::client_async(ws_url, tls_stream).await?;
             Ok(TransportStream::Wss(WsByteStream::new(ws_stream)))
         }

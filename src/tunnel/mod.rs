@@ -289,6 +289,7 @@ pub async fn run_client(
     token: &str,
     protocol: &str,
     tunnel_id: i64,
+    decoy: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     let ips: Vec<&str> = server_ips
         .split(',')
@@ -457,7 +458,7 @@ pub async fn run_client(
                 }
             };
 
-            match client_handshake(tcp_socket, protocol, token).await {
+            match client_handshake(tcp_socket, protocol, token, decoy.clone()).await {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!(

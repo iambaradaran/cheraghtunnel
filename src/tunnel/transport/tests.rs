@@ -131,7 +131,7 @@ async fn run_handshake_test(protocol: &'static str, is_udp: bool) {
         let client_token = token_owned.clone();
         let client_task = tokio::spawn(async move {
             let socket = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
-            let mut client_stream = client_handshake(socket, &client_proto, &client_token).await.unwrap();
+            let mut client_stream = client_handshake(socket, &client_proto, &client_token, None).await.unwrap();
             
             // Write data
             client_stream.write_all(message_client_to_server).await.unwrap();
