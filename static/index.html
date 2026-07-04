@@ -118,18 +118,18 @@
                     <div class="form-group">
                         <label for="tunnel-protocol">Transport Protocol</label>
                         <select id="tunnel-protocol">
-                            <option value="beam">Beam (tcpmux - Stateful TCP)</option>
-                            <option value="aura">Aura (httpmux - HTTP Mimicry)</option>
-                            <option value="nova">Nova (httpsmux - HTTPS + TLS)</option>
-                            <option value="glimmer">Glimmer (wsmux - WebSocket)</option>
-                            <option value="beacon">Beacon (wssmux - WebSocket Secure)</option>
-                            <option value="flash">Flash (kcpmux - KCP UDP)</option>
-                            <option value="ray">Ray (rawmux - Raw KCP/UDP)</option>
-                            <option value="photon">Photon (quantummux - Raw TCP+KCP Gaming)</option>
-                            <option value="lantern">Lantern (tunmux - L2/L3 TUN Tunnel)</option>
-                            <option value="mirage">Mirage (realitymux - Reality TLS Intercept)</option>
-                            <option value="halo">Halo (webrtcmux - WebRTC Video-Call Mimicry)</option>
-                            <option value="hysteria">Hysteria (hysteriamux - Quic/UDP)</option>
+                            <option value="beam">Beam (Direct TCP - Pure TCP Multiplex)</option>
+                            <option value="aura">Aura (HTTP - HTTP Header Mimicry)</option>
+                            <option value="nova">Nova (Direct TLS - Pure TLS Encryption)</option>
+                            <option value="glimmer">Glimmer (WS - Plain WebSocket over TCP)</option>
+                            <option value="beacon">Beacon (WSS - WebSocket Secure over TLS)</option>
+                            <option value="flash">Flash (Reliable UDP - Reliable sliding-window UDP)</option>
+                            <option value="ray">Ray (Raw UDP - Raw best-effort UDP)</option>
+                            <option value="photon">Photon (FakeTCP - Stateful Raw TCP + KCP)</option>
+                            <option value="lantern">Lantern (Reliable UDP - IP TUN Framing)</option>
+                            <option value="mirage">Mirage (Reality TLS - TLS Decoy Intercept)</option>
+                            <option value="halo">Halo (WebRTC - Video-Call Mimicry)</option>
+                            <option value="hysteria">Hysteria (Paced UDP - High-Speed Paced Reliable UDP)</option>
                         </select>
                     </div>
                 </div>
@@ -236,18 +236,18 @@
                 <div class="form-group">
                     <label for="edit-tunnel-protocol">Transport Protocol</label>
                     <select id="edit-tunnel-protocol">
-                        <option value="beam">Beam (tcpmux - Parallel TCP)</option>
-                        <option value="aura">Aura (httpmux - HTTP Mimicry)</option>
-                        <option value="nova">Nova (httpsmux - HTTPS+TLS)</option>
-                        <option value="glimmer">Glimmer (wsmux - WebSocket)</option>
-                        <option value="beacon">Beacon (wssmux - WebSocket+TLS)</option>
-                        <option value="flash">Flash (kcpmux - KCP/UDP)</option>
-                        <option value="ray">Ray (rawmux - Raw KCP/UDP)</option>
-                        <option value="photon">Photon (quantummux - Raw TCP+KCP Gaming)</option>
-                        <option value="lantern">Lantern (tunmux - Layer 2/3 TUN)</option>
-                        <option value="mirage">Mirage (realitymux - reality TLS)</option>
-                        <option value="halo">Halo (webrtcmux - WebRTC DataChannel)</option>
-                        <option value="hysteria">Hysteria (hysteriamux - Quic/UDP)</option>
+                        <option value="beam">Beam (Direct TCP - Pure TCP Multiplex)</option>
+                        <option value="aura">Aura (HTTP - HTTP Header Mimicry)</option>
+                        <option value="nova">Nova (Direct TLS - Pure TLS Encryption)</option>
+                        <option value="glimmer">Glimmer (WS - Plain WebSocket over TCP)</option>
+                        <option value="beacon">Beacon (WSS - WebSocket Secure over TLS)</option>
+                        <option value="flash">Flash (Reliable UDP - Reliable sliding-window UDP)</option>
+                        <option value="ray">Ray (Raw UDP - Raw best-effort UDP)</option>
+                        <option value="photon">Photon (FakeTCP - Stateful Raw TCP + KCP)</option>
+                        <option value="lantern">Lantern (Reliable UDP - IP TUN Framing)</option>
+                        <option value="mirage">Mirage (Reality TLS - TLS Decoy Intercept)</option>
+                        <option value="halo">Halo (WebRTC - Video-Call Mimicry)</option>
+                        <option value="hysteria">Hysteria (Paced UDP - High-Speed Paced Reliable UDP)</option>
                     </select>
                 </div>
                 <div class="form-row">
