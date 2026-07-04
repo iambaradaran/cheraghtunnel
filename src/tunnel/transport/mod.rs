@@ -383,9 +383,10 @@ fn generate_self_signed_config() -> Result<rustls::ServerConfig, Box<dyn Error +
     let certs = vec![CertificateDer::from(cert_der)];
     let private_key = PrivateKeyDer::Pkcs8(key_der.into());
 
-    let server_config = rustls::ServerConfig::builder()
+    let mut server_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, private_key)?;
+    server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
     Ok(server_config)
 }
@@ -463,12 +464,22 @@ impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
 fn create_client_tls_config() -> rustls::ClientConfig {
     let verifier = Arc::new(NoCertificateVerification);
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    rustls::ClientConfig::builder_with_provider(provider)
+    let mut config = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .unwrap()
         .dangerous()
         .with_custom_certificate_verifier(verifier)
-        .with_no_client_auth()
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config
+}
+
+static CLIENT_TLS_CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+
+fn get_client_tls_config() -> Arc<rustls::ClientConfig> {
+    CLIENT_TLS_CONFIG.get_or_init(|| {
+        Arc::new(create_client_tls_config())
+    }).clone()
 }
 
 // Handshake verification constants
@@ -597,8 +608,8 @@ pub async fn client_handshake(
             Ok(TransportStream::Ws(WsByteStream::new(ws_stream)))
         }
         "nova" | "httpsmux" => {
-            let config = create_client_tls_config();
-            let connector = TlsConnector::from(Arc::new(config));
+            let config = get_client_tls_config();
+            let connector = TlsConnector::from(config);
             let domain = ServerName::try_from(decoy_str.as_str())?.to_owned();
             let tls_stream = connector.connect(domain, socket).await?;
             
@@ -614,8 +625,8 @@ pub async fn client_handshake(
             Ok(stream)
         }
         "beacon" | "wssmux" => {
-            let config = create_client_tls_config();
-            let connector = TlsConnector::from(Arc::new(config));
+            let config = get_client_tls_config();
+            let connector = TlsConnector::from(config);
             let domain = ServerName::try_from(decoy_str.as_str())?.to_owned();
             let tls_stream = connector.connect(domain, socket).await?;
             
