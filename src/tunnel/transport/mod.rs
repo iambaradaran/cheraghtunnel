@@ -390,6 +390,18 @@ fn generate_self_signed_config() -> Result<rustls::ServerConfig, Box<dyn Error +
     Ok(server_config)
 }
 
+use std::sync::OnceLock;
+static SERVER_TLS_CONFIG: OnceLock<Arc<rustls::ServerConfig>> = OnceLock::new();
+
+fn get_server_tls_config() -> Result<Arc<rustls::ServerConfig>, Box<dyn Error + Send + Sync>> {
+    if let Some(config) = SERVER_TLS_CONFIG.get() {
+        return Ok(config.clone());
+    }
+    let config = Arc::new(generate_self_signed_config()?);
+    let _ = SERVER_TLS_CONFIG.set(config.clone());
+    Ok(config)
+}
+
 // Generates a simple TLS client config that trusts all certificates (necessary for self-signed keys)
 #[derive(Debug)]
 struct NoCertificateVerification;
@@ -680,8 +692,8 @@ pub async fn server_handshake(
             Ok(TransportStream::Ws(WsByteStream::new(ws_stream)))
         }
         "nova" | "httpsmux" => {
-            let config = generate_self_signed_config()?;
-            let acceptor = TlsAcceptor::from(Arc::new(config));
+            let config = get_server_tls_config()?;
+            let acceptor = TlsAcceptor::from(config);
             let tls_stream = acceptor.accept(socket).await?;
             
             let mut stream = TransportStream::TlsServer(tls_stream);
@@ -696,8 +708,8 @@ pub async fn server_handshake(
             Ok(stream)
         }
         "beacon" | "wssmux" => {
-            let config = generate_self_signed_config()?;
-            let acceptor = TlsAcceptor::from(Arc::new(config));
+            let config = get_server_tls_config()?;
+            let acceptor = TlsAcceptor::from(config);
             let tls_stream = acceptor.accept(socket).await?;
 
             let mut token_found = false;
