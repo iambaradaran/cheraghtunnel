@@ -472,9 +472,14 @@ pub async fn run_client(
                     let local_service = local_service.to_string();
                     let tid = tunnel_id;
                     tokio::spawn(async move {
-                        if let Ok(local_conn) = connect_to_local(&local_service).await {
-                            let _ = crate::common::network::optimize_socket(&local_conn);
-                            pipe_streams_monitored(stream.compat(), local_conn, tid).await;
+                        match connect_to_local(&local_service).await {
+                            Ok(local_conn) => {
+                                let _ = crate::common::network::optimize_socket(&local_conn);
+                                pipe_streams_monitored(stream.compat(), local_conn, tid).await;
+                            }
+                            Err(e) => {
+                                eprintln!("[CLIENT] Failed to connect to local service at {}: {}", local_service, e);
+                            }
                         }
                     });
                 }
