@@ -78,6 +78,8 @@ pub async fn run_server(
                 let mut config = kcp_tokio::KcpConfig::new().turbo_mode().stream_mode(true);
                 config.snd_wnd = 2048;
                 config.rcv_wnd = 2048;
+                config.mtu = 1300;
+                config.nodelay.resend = 2;
                 config.socket_buffer_size = Some(1024 * 1024 * 8);
                 let server = crate::tunnel::faketcp::FakeTcpServer::new(control_port);
                 let mut kcp_listener = match server.bind(config).await {
@@ -313,6 +315,8 @@ pub async fn run_client(
             let mut config = kcp_tokio::KcpConfig::new().turbo_mode().stream_mode(true);
             config.snd_wnd = 2048;
             config.rcv_wnd = 2048;
+            config.mtu = 1300;
+            config.nodelay.resend = 2;
             config.socket_buffer_size = Some(1024 * 1024 * 8);
             let mut client = crate::tunnel::faketcp::FakeTcpClient::new(control_addr.parse().unwrap());
             
