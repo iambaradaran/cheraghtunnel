@@ -75,10 +75,15 @@ impl LoginRateLimiter {
     }
 }
 
+pub struct ActiveServerInfo {
+    pub handle: tokio::task::JoinHandle<()>,
+    pub controls: Arc<tokio::sync::Mutex<Vec<yamux::Control>>>,
+}
+
 // Global state to track active tunnel tasks
 pub struct AppState {
     pub db_path: PathBuf,
-    pub active_servers: Mutex<HashMap<i64, tokio::task::JoinHandle<()>>>,
+    pub active_servers: Mutex<HashMap<i64, ActiveServerInfo>>,
     pub session_token: Mutex<Option<String>>,
     pub system_monitor: Mutex<System>,
     pub login_limiter: LoginRateLimiter,
@@ -132,6 +137,47 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
         }
     });
 
+    // Spawn background telemetry collector (runs every 10 seconds to sample active tunnels RTT and loss)
+    let state_tel = state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            
+            if let Ok(tunnels) = db::get_tunnels(&state_tel.db_path) {
+                let active_servers = state_tel.active_servers.lock().await;
+                for t in tunnels {
+                    if let Some(id) = t.id {
+                        if let Some(info) = active_servers.get(&id) {
+                            let mut pool = info.controls.lock().await;
+                            if !pool.is_empty() {
+                                // Send native Yamux ping to the first active node in the pool to measure RTT
+                                let mut ctrl = pool[0].clone();
+                                drop(pool); // Release lock during ping to prevent blocking other handshakes
+                                
+                                let start = tokio::time::Instant::now();
+                                match tokio::time::timeout(tokio::time::Duration::from_secs(3), ctrl.open_stream()).await {
+                                    Ok(Ok(stream)) => {
+                                        let rtt_ms = start.elapsed().as_secs_f64() * 1000.0;
+                                        drop(stream); // Close test stream immediately
+                                        let _ = db::insert_telemetry(&state_tel.db_path, id, rtt_ms, 0.0);
+                                    }
+                                    _ => {
+                                        // Ping failed or timed out, log 100% packet loss
+                                        let _ = db::insert_telemetry(&state_tel.db_path, id, 999.0, 100.0);
+                                    }
+                                }
+                            } else {
+                                drop(pool);
+                                // No nodes active in the pool yet, record 100% loss
+                                let _ = db::insert_telemetry(&state_tel.db_path, id, 999.0, 100.0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     // Public routes (no auth required)
     let public_routes = Router::new()
         .route("/", get(static_handler))
@@ -148,6 +194,7 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
         .route("/api/tunnels/:id", get(get_tunnel_handler).put(update_tunnel_handler).delete(delete_tunnel_handler))
         .route("/api/tunnels/:id/toggle", post(toggle_tunnel_handler))
         .route("/api/tunnels/:id/deploy", post(deploy_tunnel_handler))
+        .route("/api/tunnels/:id/telemetry", get(telemetry_handler))
         .route("/api/stats", get(stats_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
@@ -266,6 +313,27 @@ async fn login_handler(
     }
 }
 
+async fn telemetry_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> impl IntoResponse {
+    match db::get_telemetry_logs(&state.db_path, id, 100) {
+        Ok(logs) => {
+            let list: Vec<serde_json::Value> = logs.into_iter().map(|(rtt, loss, ts)| {
+                serde_json::json!({
+                    "rtt_ms": rtt,
+                    "packet_loss": loss,
+                    "timestamp": ts
+                })
+            }).collect();
+            (StatusCode::OK, Json(list)).into_response()
+        }
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response()
+        }
+    }
+}
+
 // Tunnel Management Handlers
 async fn get_tunnels_handler(Extension(state): Extension<Arc<AppState>>) -> impl IntoResponse {
     match db::get_tunnels(&state.db_path) {
@@ -304,8 +372,8 @@ async fn delete_tunnel_handler(
 ) -> impl IntoResponse {
     // First, stop the server if running
     let mut servers = state.active_servers.lock().await;
-    if let Some(handle) = servers.remove(&id) {
-        handle.abort();
+    if let Some(info) = servers.remove(&id) {
+        info.handle.abort();
     }
     
     match db::delete_tunnel(&state.db_path, id) {
@@ -349,8 +417,8 @@ async fn update_tunnel_handler(
     let mut servers = state.active_servers.lock().await;
     let was_active = servers.contains_key(&id);
     if was_active {
-        if let Some(handle) = servers.remove(&id) {
-            handle.abort();
+        if let Some(info) = servers.remove(&id) {
+            info.handle.abort();
         }
     }
     drop(servers);
@@ -380,11 +448,15 @@ async fn start_tunnel_server(state: Arc<AppState>, tunnel: &db::Tunnel, id: i64)
     let public_port = tunnel.iran_port;
     let decoy = tunnel.decoy_url.clone();
 
-    // Spawn background server task passing correct tunnel ID for speed stats tracking
+    // Create pool for Round-Robin load balancing across multiple nodes
+    let active_controls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let active_controls_clone = active_controls.clone();
+
+    // Spawn background server task passing correct tunnel ID and active_controls pool
     let proto_spawn = protocol.clone();
     let state_clone = state.clone();
     let handle = tokio::spawn(async move {
-        if let Err(e) = crate::tunnel::run_server(control_port, public_port, &token, &proto_spawn, decoy, id).await {
+        if let Err(e) = crate::tunnel::run_server(control_port, public_port, &token, &proto_spawn, decoy, id, active_controls_clone).await {
             eprintln!("Background tunnel server daemon error: {}", e);
         }
         let _ = db::update_tunnel_status(&state_clone.db_path, id, "inactive");
@@ -392,7 +464,7 @@ async fn start_tunnel_server(state: Arc<AppState>, tunnel: &db::Tunnel, id: i64)
         servers.remove(&id);
     });
 
-    servers.insert(id, handle);
+    servers.insert(id, ActiveServerInfo { handle, controls: active_controls });
     let _ = db::update_tunnel_status(&state.db_path, id, "active");
     println!("Spawned background tunnel server daemon for id = {}, protocol = {}", id, protocol);
     Ok(())
@@ -413,8 +485,8 @@ async fn toggle_tunnel_handler(
 
     if servers.contains_key(&id) {
         // If active, stop it
-        if let Some(handle) = servers.remove(&id) {
-            handle.abort();
+        if let Some(info) = servers.remove(&id) {
+            info.handle.abort();
         }
         let _ = db::update_tunnel_status(&state.db_path, id, "inactive");
         println!("Aborted tunnel server daemon for id = {}", id);

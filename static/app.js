@@ -234,6 +234,7 @@ async function loadTunnels() {
                         </button>
                         <button class="btn btn-secondary" onclick="showDeployModal(${t.id})">SSH Deploy</button>
                         <button class="btn btn-secondary" onclick="showNodeCommand(${t.id})">Node Cmd</button>
+                        <button class="btn btn-secondary" style="background: rgba(168, 85, 247, 0.15); color: #a855f7;" onclick="showTelemetry(${t.id}, '${t.name}')">Telemetry</button>
                         <button class="btn btn-secondary" style="background: rgba(0, 240, 255, 0.15); color: var(--color-cyan);" onclick="showEditModal(${t.id})">Edit</button>
                         <button class="btn btn-secondary btn-danger" style="background: rgba(255,51,102,0.15); color: #ff3366;" onclick="deleteTunnel(${t.id})">Delete</button>
                     </div>
@@ -539,4 +540,137 @@ function extractDynamicOptions(containerId) {
     
     return JSON.stringify(opts);
 }
+
+let telemetryChartInstance = null;
+let telemetryInterval = null;
+
+async function showTelemetry(id, name) {
+    const section = document.getElementById('telemetry-section');
+    const title = document.getElementById('telemetry-title');
+    
+    title.innerText = `Telemetry History: ${name}`;
+    section.style.display = 'block';
+    section.scrollIntoView({ behavior: 'smooth' });
+    
+    // Clear any active interval first
+    if (telemetryInterval) {
+        clearInterval(telemetryInterval);
+    }
+    
+    // Initial fetch
+    await updateTelemetryChart(id);
+    
+    // Auto-update every 10 seconds
+    telemetryInterval = setInterval(() => {
+        updateTelemetryChart(id);
+    }, 10000);
+}
+
+async function updateTelemetryChart(id) {
+    try {
+        const res = await apiFetch(`/api/tunnels/${id}/telemetry`);
+        if (!res || !res.ok) return;
+        const logs = await res.json();
+        
+        const labels = logs.map(l => {
+            const date = new Date(l.timestamp * 1000);
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        });
+        const rttData = logs.map(l => l.rtt_ms >= 999 ? null : l.rtt_ms);
+        const lossData = logs.map(l => l.packet_loss);
+        
+        const ctx = document.getElementById('telemetry-chart').getContext('2d');
+        
+        if (telemetryChartInstance) {
+            telemetryChartInstance.data.labels = labels;
+            telemetryChartInstance.data.datasets[0].data = rttData;
+            telemetryChartInstance.data.datasets[1].data = lossData;
+            telemetryChartInstance.update();
+        } else {
+            telemetryChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'RTT Latency (ms)',
+                            data: rttData,
+                            borderColor: '#00f0ff',
+                            backgroundColor: 'rgba(0, 240, 255, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.3,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Packet Loss (%)',
+                            data: lossData,
+                            borderColor: '#ff3366',
+                            backgroundColor: 'rgba(255, 51, 102, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.3,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            title: {
+                                display: true,
+                                text: 'RTT (ms)',
+                                color: '#fff'
+                            },
+                            ticks: { color: '#ccc' },
+                            grid: { color: 'rgba(255, 255, 255, 0.05)' }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            title: {
+                                display: true,
+                                text: 'Loss (%)',
+                                color: '#fff'
+                            },
+                            ticks: { color: '#ccc' },
+                            grid: { drawOnChartArea: false },
+                            min: 0,
+                            max: 100
+                        },
+                        x: {
+                            ticks: { color: '#ccc' },
+                            grid: { color: 'rgba(255, 255, 255, 0.05)' }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: { color: '#fff' }
+                        }
+                    }
+                }
+            });
+        }
+    } catch (err) {
+        console.error(err);
+    }
+}
+
+// Add close button listener
+document.addEventListener('DOMContentLoaded', () => {
+    const closeBtn = document.getElementById('close-telemetry-btn');
+    if (closeBtn) {
+        closeBtn.addEventListener('click', () => {
+            document.getElementById('telemetry-section').style.display = 'none';
+            if (telemetryInterval) {
+                clearInterval(telemetryInterval);
+                telemetryInterval = null;
+            }
+        });
+    }
+});
 

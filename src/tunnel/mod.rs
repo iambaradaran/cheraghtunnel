@@ -52,6 +52,7 @@ pub async fn run_server(
     protocol: &str,
     decoy: Option<String>,
     tunnel_id: i64,
+    active_controls: Arc<tokio::sync::Mutex<Vec<yamux::Control>>>,
 ) -> Result<(), Box<dyn Error>> {
     println!(
         "[SERVER] Launching protocol: '{}' on control port: {}, public port: {}",
@@ -138,54 +139,46 @@ pub async fn run_server(
                 let _multiplexer = UdpMultiplexer::new(socket, mode, new_conn_tx);
                 
                 let token_auth = format!("Cheragh-Auth {}", token_owned);
-                
-                while let Some(mut stream) = new_conn_rx.recv().await {
-                    let control_tx_clone = control_tx.clone();
-                    let token_auth_clone = token_auth.clone();
-                    let mode_clone = mode;
-                    
-                    tokio::spawn(async move {
-                        if mode_clone == UdpMode::Ray {
-                            // Ray raw UDP needs no token handshake
-                            let _ = control_tx_clone.send(TransportStream::Udp(stream)).await;
-                            return;
-                        }
-
-                        // Wait for Client authentication header over reliable UDP
-                        let mut buf = vec![0u8; token_auth_clone.len()];
-                        if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut buf)).await {
-                            let auth_str = String::from_utf8_lossy(&buf);
-                            if auth_str == token_auth_clone {
-                                // Send ACK back to the client
-                                if stream.write_all(b"ACK").await.is_ok() && stream.flush().await.is_ok() {
-                                    let mut inner = stream.inner.lock().await;
-                                    inner.handshake_done = true;
-                                    drop(inner);
-                                    let _ = control_tx_clone.send(TransportStream::Udp(stream)).await;
+                let control_tx_clone = control_tx.clone();
+                tokio::spawn(async move {
+                    while let Some(mut stream) = new_conn_rx.recv().await {
+                        let token_auth_clone = token_auth.clone();
+                        let control_tx_clone_inner = control_tx_clone.clone();
+                        
+                        tokio::spawn(async move {
+                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                            let mut buf = vec![0u8; token_auth_clone.len()];
+                            if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read_exact(&mut buf)).await {
+                                let auth_str = String::from_utf8_lossy(&buf);
+                                if auth_str == token_auth_clone {
+                                    if stream.write_all(b"ACK").await.is_ok() && stream.flush().await.is_ok() {
+                                        println!("[SERVER] Authentic client connected (UDP)");
+                                        let _ = control_tx_clone_inner.send(TransportStream::Udp(stream)).await;
+                                    }
                                 }
                             }
-                        }
-                    });
-                }
+                        });
+                    }
+                });
             } else {
-                // --- TCP Control Protocol Server ---
+                // --- TCP/TLS/WS Control Protocol Server ---
                 let control_addr = format!("0.0.0.0:{}", control_port);
-                let control_listener = match crate::common::network::bind_listener(control_addr.parse().unwrap()) {
+                let control_listener = match tokio::net::TcpListener::bind(&control_addr).await {
                     Ok(l) => l,
                     Err(e) => {
-                        eprintln!("[SERVER] Failed to bind TCP control port {}: {}", control_port, e);
+                        eprintln!("[SERVER] Failed to bind control port {}: {}", control_port, e);
                         return;
                     }
                 };
-
+                
                 println!("[SERVER] Listening for TCP control connections on port: {}", control_port);
-
+                
                 loop {
                     match control_listener.accept().await {
                         Ok((control_socket, addr)) => {
                             let _ = crate::common::network::optimize_socket(&control_socket);
-                            let token_clone = token_owned.clone();
                             let proto_clone = protocol_owned.clone();
+                            let token_clone = token_owned.clone();
                             let decoy_clone = decoy_owned.clone();
                             let control_tx_clone = control_tx.clone();
 
@@ -213,59 +206,75 @@ pub async fn run_server(
         })),
     };
 
-    // Main loop: accept public user connections and pair each with a yamux logical stream
-    let mut current_yamux: Option<yamux::Control> = None;
-    let mut yamux_task: Option<tokio::task::JoinHandle<()>> = None;
+    // Background task to accept authenticated client sockets and add them to the Yamux controls pool
+    let active_controls_clone = active_controls.clone();
+    let _pool_guard = LoopGuard {
+        handle: Some(tokio::spawn(async move {
+            while let Some(control_socket) = control_rx.recv().await {
+                println!("[SERVER] Establishing Yamux session for new client node in pool...");
+                let mut cfg = yamux::Config::default();
+                cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
+                cfg.set_max_buffer_size(1024 * 1024 * 4);
+                
+                let conn = yamux::Connection::new(control_socket.compat(), cfg, yamux::Mode::Client);
+                let ctrl = conn.control();
+                
+                // Spawn task to process the connection's packet routing
+                tokio::spawn(async move {
+                    let stream = Box::pin(yamux::into_stream(conn));
+                    let _ = stream.for_each(|_| futures::future::ready(())).await;
+                    println!("[SERVER] Client node Yamux session closed.");
+                });
+                
+                let mut pool = active_controls_clone.lock().await;
+                pool.push(ctrl);
+                println!("[SERVER] Node added to pool. Total active nodes: {}", pool.len());
+            }
+        })),
+    };
+
+    // Main loop: accept public user connections and pair each with a yamux logical stream from the active pool in a Round-Robin fashion
+    let mut rr_index = 0;
 
     while let Ok((user_socket, user_addr)) = public_listener.accept().await {
         let _ = crate::common::network::optimize_socket(&user_socket);
-        // println!("[SERVER] User connected from {} to public port", user_addr);
-
+        
         let mut stream_result = None;
-        if let Some(mut ctrl) = current_yamux.take() {
+        let mut attempts = 0;
+        
+        loop {
+            let mut pool = active_controls.lock().await;
+            if pool.is_empty() {
+                drop(pool);
+                // Wait briefly for at least one client node to connect
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                attempts += 1;
+                if attempts > 30 { // 3 seconds timeout
+                    eprintln!("[SERVER] No client nodes available in pool to service user {}", user_addr);
+                    break;
+                }
+                continue;
+            }
+            
+            // Pick next control in round-robin fashion
+            let idx = rr_index % pool.len();
+            let mut ctrl = pool[idx].clone();
+            drop(pool); // Release lock while we open the stream to avoid blocking other handshakes
+            
             match ctrl.open_stream().await {
                 Ok(s) => {
                     stream_result = Some(s);
-                    current_yamux = Some(ctrl);
+                    rr_index += 1;
+                    break;
                 }
                 Err(_) => {
-                    if let Some(t) = yamux_task.take() {
-                        t.abort();
+                    // Node disconnected/died. Evict it from the pool!
+                    println!("[SERVER] Client node at index {} failed, removing from pool.", idx);
+                    let mut pool = active_controls.lock().await;
+                    if idx < pool.len() {
+                        pool.remove(idx);
                     }
-                }
-            }
-        }
-
-        if stream_result.is_none() {
-            match control_rx.recv().await {
-                Some(control_socket) => {
-                    println!("[SERVER] Establishing new Yamux session with client node...");
-                    let mut cfg = yamux::Config::default();
-                    cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
-                    cfg.set_max_buffer_size(1024 * 1024 * 4);
-                    
-                    let conn = yamux::Connection::new(control_socket.compat(), cfg, yamux::Mode::Client);
-                    let mut ctrl = conn.control();
-                    
-                    yamux_task = Some(tokio::spawn(async move {
-                        let stream = Box::pin(yamux::into_stream(conn));
-                        let _ = stream.for_each(|_| futures::future::ready(())).await;
-                    }));
-                    
-                    match ctrl.open_stream().await {
-                        Ok(s) => {
-                            current_yamux = Some(ctrl);
-                            stream_result = Some(s);
-                        }
-                        Err(e) => {
-                            eprintln!("[SERVER] Failed to open stream on new yamux: {}", e);
-                            continue;
-                        }
-                    }
-                }
-                None => {
-                    eprintln!("[SERVER] Control channel closed, no more client nodes available");
-                    break;
+                    drop(pool);
                 }
             }
         }
@@ -302,6 +311,7 @@ pub async fn run_client(
     }
 
     let mut ip_index = 0;
+    let mut dynamic_mtu = 1350;
 
     loop {
         let current_ip = ips[ip_index % ips.len()];
@@ -312,11 +322,11 @@ pub async fn run_client(
         let control_addr = format!("{}:{}", current_ip, control_port);
 
         let mut control_socket = if is_faketcp_protocol(protocol) {
-            println!("[CLIENT] Connecting via FakeTCP (KCP) to {}...", control_addr);
+            println!("[CLIENT] Connecting via FakeTCP (KCP) to {} with MTU {}...", control_addr, dynamic_mtu);
             let mut config = kcp_tokio::KcpConfig::new().turbo_mode().stream_mode(true);
             config.snd_wnd = 2048;
             config.rcv_wnd = 2048;
-            config.mtu = 1300;
+            config.mtu = dynamic_mtu;
             config.nodelay.resend = 2;
             config.socket_buffer_size = Some(1024 * 1024 * 8);
             let mut client = crate::tunnel::faketcp::FakeTcpClient::new(control_addr.parse().unwrap());
@@ -332,7 +342,11 @@ pub async fn run_client(
                     }
                     let mut ack = [0u8; 3];
                     match tokio::time::timeout(tokio::time::Duration::from_secs(5), s.read_exact(&mut ack)).await {
-                        Ok(Ok(_)) if &ack == b"ACK" => TransportStream::Kcp(s),
+                        Ok(Ok(_)) if &ack == b"ACK" => {
+                            // Reset MTU back to optimum on success
+                            dynamic_mtu = 1350;
+                            TransportStream::Kcp(s)
+                        }
                         _ => {
                             eprintln!("[CLIENT] FakeTCP KCP authentication failed on server {}", current_ip);
                             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -341,7 +355,9 @@ pub async fn run_client(
                     }
                 }
                 Err(e) => {
-                    eprintln!("[CLIENT] Failed to establish FakeTCP KCP connection: {}", e);
+                    eprintln!("[CLIENT] Failed to establish FakeTCP KCP connection: {}. Calibrating PMTUD...", e);
+                    // Decrement MTU to adapt to network packet fragmentation drops
+                    dynamic_mtu = if dynamic_mtu > 1200 { dynamic_mtu - 50 } else { 1350 };
                     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
                     continue;
                 }

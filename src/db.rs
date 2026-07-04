@@ -50,11 +50,23 @@ pub fn init_db(db_path: &Path) -> Result<()> {
         [],
     )?;
 
-    // Run schema migrations for existing DBs
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN backup_ips TEXT", []);
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN transport_options TEXT", []);
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN stats_speed_rx INTEGER DEFAULT 0", []);
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN stats_speed_tx INTEGER DEFAULT 0", []);
+
+    // Create telemetry_logs table to store RTT/loss history
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS telemetry_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tunnel_id INTEGER NOT NULL,
+            rtt_ms REAL NOT NULL,
+            packet_loss REAL NOT NULL,
+            timestamp INTEGER DEFAULT (strftime('%s', 'now')),
+            FOREIGN KEY(tunnel_id) REFERENCES tunnels(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
 
     // Create settings table
     conn.execute(
@@ -294,5 +306,38 @@ pub fn verify_password(input: &str, stored: &str) -> bool {
         // Legacy plaintext comparison (for DBs not yet migrated)
         constant_time_eq(input.as_bytes(), stored.as_bytes())
     }
+}
+
+pub fn insert_telemetry(db_path: &Path, tunnel_id: i64, rtt_ms: f64, packet_loss: f64) -> Result<()> {
+    let conn = get_db_conn(db_path)?;
+    conn.execute(
+        "INSERT INTO telemetry_logs (tunnel_id, rtt_ms, packet_loss) VALUES (?1, ?2, ?3)",
+        params![tunnel_id, rtt_ms, packet_loss],
+    )?;
+    // Prune logs older than 24 hours (86400 seconds)
+    let _ = conn.execute(
+        "DELETE FROM telemetry_logs WHERE timestamp < (strftime('%s', 'now') - 86400)",
+        [],
+    );
+    Ok(())
+}
+
+pub fn get_telemetry_logs(db_path: &Path, tunnel_id: i64, limit: usize) -> Result<Vec<(f64, f64, i64)>> {
+    let conn = get_db_conn(db_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT rtt_ms, packet_loss, timestamp FROM telemetry_logs 
+         WHERE tunnel_id = ?1 ORDER BY timestamp DESC LIMIT ?2"
+    )?;
+    let rows = stmt.query_map(params![tunnel_id, limit], |row| {
+        Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?, row.get::<_, i64>(2)?))
+    })?;
+    
+    let mut logs = Vec::new();
+    for r in rows {
+        logs.push(r?);
+    }
+    // Reverse to chronological order for charts
+    logs.reverse();
+    Ok(logs)
 }
 

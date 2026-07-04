@@ -391,14 +391,55 @@ fn generate_self_signed_config() -> Result<rustls::ServerConfig, Box<dyn Error +
     Ok(server_config)
 }
 
+fn load_custom_tls_config(cert_path: &Path, key_path: &Path) -> Result<rustls::ServerConfig, Box<dyn Error + Send + Sync>> {
+    use std::fs::File;
+    use std::io::BufReader;
+    
+    let mut cert_file = BufReader::new(File::open(cert_path)?);
+    let mut key_file = BufReader::new(File::open(key_path)?);
+    
+    let cert_bytes = rustls_pemfile::certs(&mut cert_file)?;
+    let certs = cert_bytes.into_iter().map(CertificateDer::from).collect::<Vec<_>>();
+    
+    let mut keys = rustls_pemfile::pkcs8_private_keys(&mut key_file)?;
+    if keys.is_empty() {
+        let mut key_file2 = BufReader::new(File::open(key_path)?);
+        keys = rustls_pemfile::rsa_private_keys(&mut key_file2)?;
+    }
+    
+    if keys.is_empty() {
+        return Err("No valid private key found in key.pem".into());
+    }
+    
+    let private_key = PrivateKeyDer::Pkcs8(keys.remove(0).into());
+    
+    let mut server_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, private_key)?;
+    server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    
+    Ok(server_config)
+}
+
 use std::sync::OnceLock;
+use std::path::Path;
 static SERVER_TLS_CONFIG: OnceLock<Arc<rustls::ServerConfig>> = OnceLock::new();
 
 fn get_server_tls_config() -> Result<Arc<rustls::ServerConfig>, Box<dyn Error + Send + Sync>> {
     if let Some(config) = SERVER_TLS_CONFIG.get() {
         return Ok(config.clone());
     }
-    let config = Arc::new(generate_self_signed_config()?);
+    
+    let cert_path = Path::new("cert.pem");
+    let key_path = Path::new("key.pem");
+    
+    let config = if cert_path.exists() && key_path.exists() {
+        println!("[TLS] Loading custom SSL certificate from cert.pem/key.pem...");
+        Arc::new(load_custom_tls_config(cert_path, key_path)?)
+    } else {
+        Arc::new(generate_self_signed_config()?)
+    };
+    
     let _ = SERVER_TLS_CONFIG.set(config.clone());
     Ok(config)
 }
@@ -515,6 +556,15 @@ fn build_tls_client_hello(decoy: &str, token: &str) -> Vec<u8> {
     extensions.extend_from_slice(&[0x00, 0x00]); // SNI type
     extensions.extend_from_slice(&(sni.len() as u16).to_be_bytes());
     extensions.extend_from_slice(&sni);
+
+    // Append ALPN extension (http/1.1) to look like a standard web browser connection
+    extensions.extend_from_slice(&[
+        0x00, 0x10, // Extension Type: ALPN
+        0x00, 0x0b, // Extension Length: 11
+        0x00, 0x09, // Protocol List Length: 9
+        0x08, // Protocol Name Length: 8
+        b'h', b't', b't', b'p', b'/', b'1', b'.', b'1' // "http/1.1"
+    ]);
 
     let ext_len = extensions.len() as u16;
     body.extend_from_slice(&ext_len.to_be_bytes());
@@ -702,6 +752,7 @@ pub async fn server_handshake(
         }
         "glimmer" | "wsmux" => {
             let mut token_found = false;
+            let decoy_str = decoy.clone().unwrap_or_else(|| "google.com".to_string());
             let callback = |req: &tungstenite::handshake::server::Request, resp: tungstenite::handshake::server::Response| {
                 if let Some(query) = req.uri().query() {
                     if query.contains(&format!("token={}", token)) {
@@ -709,9 +760,16 @@ pub async fn server_handshake(
                         return Ok(resp);
                     }
                 }
+                let redirect_url = if decoy_str.starts_with("http://") || decoy_str.starts_with("https://") {
+                    decoy_str.clone()
+                } else {
+                    format!("https://{}", decoy_str)
+                };
                 Err(tungstenite::http::Response::builder()
-                    .status(401)
-                    .body(Some("Unauthorized".to_string()))
+                    .status(302)
+                    .header("Location", redirect_url)
+                    .header("Connection", "close")
+                    .body(Some("".to_string()))
                     .unwrap())
             };
             let ws_stream = tokio_tungstenite::accept_hdr_async(socket, callback).await?;
@@ -730,6 +788,7 @@ pub async fn server_handshake(
             stream.read_exact(&mut buf).await?;
             let auth = String::from_utf8_lossy(&buf);
             if auth != expected {
+                let _ = send_decoy_response(&mut stream, decoy).await;
                 return Err("Nova client TLS auth failed".into());
             }
             stream.write_all(b"ACK").await?;
@@ -742,6 +801,7 @@ pub async fn server_handshake(
             let tls_stream = acceptor.accept(socket).await?;
 
             let mut token_found = false;
+            let decoy_str = decoy.clone().unwrap_or_else(|| "google.com".to_string());
             let callback = |req: &tungstenite::handshake::server::Request, resp: tungstenite::handshake::server::Response| {
                 if let Some(query) = req.uri().query() {
                     if query.contains(&format!("token={}", token)) {
@@ -749,9 +809,16 @@ pub async fn server_handshake(
                         return Ok(resp);
                     }
                 }
+                let redirect_url = if decoy_str.starts_with("http://") || decoy_str.starts_with("https://") {
+                    decoy_str.clone()
+                } else {
+                    format!("https://{}", decoy_str)
+                };
                 Err(tungstenite::http::Response::builder()
-                    .status(401)
-                    .body(Some("Unauthorized".to_string()))
+                    .status(302)
+                    .header("Location", redirect_url)
+                    .header("Connection", "close")
+                    .body(Some("".to_string()))
                     .unwrap())
             };
             let ws_stream = tokio_tungstenite::accept_hdr_async(tls_stream, callback).await?;
@@ -809,40 +876,95 @@ pub async fn server_handshake(
     }
 }
 
-async fn send_decoy_response(socket: &mut TcpStream, decoy: Option<String>) -> io::Result<()> {
-    let decoy_resp = if let Some(ref d) = decoy {
-        if d.starts_with("http://") || d.starts_with("https://") {
-            format!(
-                "HTTP/1.1 302 Found\r\n\
-                 Location: {}\r\n\
-                 Content-Length: 0\r\n\
-                 Connection: close\r\n\r\n",
-                d
-            )
-        } else {
-            format!(
-                "HTTP/1.1 200 OK\r\n\
-                 Content-Type: text/html; charset=UTF-8\r\n\
-                 Content-Length: {}\r\n\
-                 Connection: close\r\n\r\n\
-                 {}",
-                d.len(),
-                d
-            )
+async fn fetch_decoy_proxy(decoy_url: &str) -> Result<(u16, Vec<(String, String)>, Vec<u8>), Box<dyn Error + Send + Sync>> {
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()?;
+    
+    let resp = client.get(decoy_url).send().await?;
+    let status = resp.status().as_u16();
+    
+    let mut headers = Vec::new();
+    for (key, val) in resp.headers().iter() {
+        if let Ok(val_str) = val.to_str() {
+            headers.push((key.to_string(), val_str.to_string()));
         }
-    } else {
-        let default_body = "<!DOCTYPE html><html><head><title>Welcome</title></head><body><h1>Under Construction</h1></body></html>";
-        format!(
-            "HTTP/1.1 200 OK\r\n\
-             Content-Type: text/html; charset=UTF-8\r\n\
-             Content-Length: {}\r\n\
-             Connection: close\r\n\r\n\
-             {}",
-            default_body.len(),
-            default_body
-        )
+    }
+    
+    let body = resp.bytes().await?.to_vec();
+    Ok((status, headers, body))
+}
+
+async fn send_decoy_response<S>(socket: &mut S, decoy: Option<String>) -> io::Result<()>
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+    
+    let mut status = 200;
+    let mut headers = vec![
+        ("Content-Type".to_string(), "text/html; charset=UTF-8".to_string()),
+        ("Connection".to_string(), "close".to_string()),
+    ];
+    let mut body = b"<!DOCTYPE html><html><head><title>Welcome</title></head><body><h1>Under Construction</h1></body></html>".to_vec();
+
+    if let Some(ref d) = decoy {
+        if d.starts_with("http://") || d.starts_with("https://") {
+            // Attempt to reverse proxy the decoy website
+            match fetch_decoy_proxy(d).await {
+                Ok((s, h, b)) => {
+                    status = s;
+                    headers = h.into_iter().filter(|(k, _)| {
+                        let k_lower = k.to_lowercase();
+                        k_lower != "transfer-encoding" && k_lower != "content-encoding" && k_lower != "connection"
+                    }).collect();
+                    headers.push(("Connection".to_string(), "close".to_string()));
+                    body = b;
+                }
+                Err(e) => {
+                    eprintln!("[DECOY] Proxy to {} failed, falling back to redirect: {}", d, e);
+                    // Fallback to 302 redirect
+                    status = 302;
+                    headers = vec![
+                        ("Location".to_string(), d.clone()),
+                        ("Content-Length".to_string(), "0".to_string()),
+                        ("Connection".to_string(), "close".to_string()),
+                    ];
+                    body = Vec::new();
+                }
+            }
+        } else {
+            // Treat as static HTML/text raw decoy content
+            headers = vec![
+                ("Content-Type".to_string(), "text/html; charset=UTF-8".to_string()),
+                ("Content-Length".to_string(), d.len().to_string()),
+                ("Connection".to_string(), "close".to_string()),
+            ];
+            body = d.as_bytes().to_vec();
+        }
+    }
+
+    // Build raw HTTP response bytes
+    let status_text = match status {
+        200 => "OK",
+        302 => "Found",
+        404 => "Not Found",
+        _ => "OK",
     };
-    socket.write_all(decoy_resp.as_bytes()).await?;
+    
+    let mut response = format!("HTTP/1.1 {} {}\r\n", status, status_text);
+    for (k, v) in &headers {
+        response.push_str(&format!("{}: {}\r\n", k, v));
+    }
+    if !headers.iter().any(|(k, _)| k.to_lowercase() == "content-length") {
+        response.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    response.push_str("\r\n");
+
+    let mut raw_bytes = response.into_bytes();
+    raw_bytes.extend_from_slice(&body);
+
+    socket.write_all(&raw_bytes).await?;
     socket.flush().await
 }
 

@@ -112,7 +112,8 @@ async fn main() {
         } => {
             println!("Starting CheraghTunnel Server on control port {}, forwarding public port {} via protocol '{}'...",
                      control_port, public_port, protocol);
-            if let Err(e) = tunnel::run_server(control_port, public_port, &token, &protocol, decoy, 0).await {
+            let active_controls = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+            if let Err(e) = tunnel::run_server(control_port, public_port, &token, &protocol, decoy, 0, active_controls).await {
                 eprintln!("Server tunnel error: {}", e);
                 std::process::exit(1);
             }

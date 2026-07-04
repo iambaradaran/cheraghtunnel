@@ -1,6 +1,6 @@
 [package]
 name = "cheraghtunnel"
-version = "1.6.2"
+version = "1.6.31"
 edition = "2021"
 authors = ["Antigravity Partner"]
 
@@ -53,3 +53,5 @@ yamux = "0.10.1"
 tokio-util = { version = "0.7.13", features = ["compat"] }
 kcp-tokio = "0.7.0"
 pnet = "0.35.0"
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls", "stream"] }
+rustls-pemfile = "1.0"
