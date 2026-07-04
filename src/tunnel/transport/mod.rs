@@ -15,6 +15,7 @@ use tokio_tungstenite::tungstenite::{self, protocol::Message, protocol::Role};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use futures::{Stream, Sink};
 use rand::Rng;
+use kcp_tokio::KcpStream;
 
 // A adapter to wrap a WebSocketStream (which works on messages) into a byte-oriented AsyncRead/AsyncWrite stream.
 pub struct WsByteStream<S> {
@@ -285,6 +286,7 @@ pub enum TransportStream {
     Wss(WsByteStream<ClientTlsStream<TcpStream>>),
     WssServer(WsByteStream<ServerTlsStream<TcpStream>>),
     Udp(udp::UdpVirtualStream),
+    Kcp(KcpStream),
     Obfuscated(ObfuscatedStream<TcpStream>),
     ObfuscatedWs(ObfuscatedStream<WsByteStream<TcpStream>>),
 }
@@ -303,6 +305,7 @@ impl AsyncRead for TransportStream {
             TransportStream::Wss(s) => Pin::new(s).poll_read(cx, buf),
             TransportStream::WssServer(s) => Pin::new(s).poll_read(cx, buf),
             TransportStream::Udp(s) => Pin::new(s).poll_read(cx, buf),
+            TransportStream::Kcp(s) => Pin::new(s).poll_read(cx, buf),
             TransportStream::Obfuscated(s) => Pin::new(s).poll_read(cx, buf),
             TransportStream::ObfuscatedWs(s) => Pin::new(s).poll_read(cx, buf),
         }
@@ -323,6 +326,7 @@ impl AsyncWrite for TransportStream {
             TransportStream::Wss(s) => Pin::new(s).poll_write(cx, buf),
             TransportStream::WssServer(s) => Pin::new(s).poll_write(cx, buf),
             TransportStream::Udp(s) => Pin::new(s).poll_write(cx, buf),
+            TransportStream::Kcp(s) => Pin::new(s).poll_write(cx, buf),
             TransportStream::Obfuscated(s) => Pin::new(s).poll_write(cx, buf),
             TransportStream::ObfuscatedWs(s) => Pin::new(s).poll_write(cx, buf),
         }
@@ -337,6 +341,7 @@ impl AsyncWrite for TransportStream {
             TransportStream::Wss(s) => Pin::new(s).poll_flush(cx),
             TransportStream::WssServer(s) => Pin::new(s).poll_flush(cx),
             TransportStream::Udp(s) => Pin::new(s).poll_flush(cx),
+            TransportStream::Kcp(s) => Pin::new(s).poll_flush(cx),
             TransportStream::Obfuscated(s) => Pin::new(s).poll_flush(cx),
             TransportStream::ObfuscatedWs(s) => Pin::new(s).poll_flush(cx),
         }
@@ -351,6 +356,7 @@ impl AsyncWrite for TransportStream {
             TransportStream::Wss(s) => Pin::new(s).poll_shutdown(cx),
             TransportStream::WssServer(s) => Pin::new(s).poll_shutdown(cx),
             TransportStream::Udp(s) => Pin::new(s).poll_shutdown(cx),
+            TransportStream::Kcp(s) => Pin::new(s).poll_shutdown(cx),
             TransportStream::Obfuscated(s) => Pin::new(s).poll_shutdown(cx),
             TransportStream::ObfuscatedWs(s) => Pin::new(s).poll_shutdown(cx),
         }

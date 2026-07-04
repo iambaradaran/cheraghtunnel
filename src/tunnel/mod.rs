@@ -1,4 +1,5 @@
 pub mod multiplex;
+pub mod faketcp;
 pub mod transport;
 
 use std::error::Error;
@@ -40,6 +41,10 @@ fn get_udp_mode(protocol: &str) -> UdpMode {
     }
 }
 
+fn is_faketcp_protocol(protocol: &str) -> bool {
+    protocol == "photon"
+}
+
 pub async fn run_server(
     control_port: u16,
     public_port: u16,
@@ -68,7 +73,49 @@ pub async fn run_server(
     // Wrap in LoopGuard so the task is auto-aborted when run_server returns.
     let _accept_guard = LoopGuard {
         handle: Some(tokio::spawn(async move {
-            if is_udp_protocol(&protocol_owned) {
+            if is_faketcp_protocol(&protocol_owned) {
+                // --- FakeTCP (KCP) Protocol Server ---
+                let config = kcp_tokio::KcpConfig::new().turbo_mode().stream_mode(true);
+                let server = crate::tunnel::faketcp::FakeTcpServer::new(control_port);
+                let mut kcp_listener = match server.bind(config).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("[SERVER] Failed to bind FakeTCP port {}: {}", control_port, e);
+                        return;
+                    }
+                };
+
+                println!("[SERVER] Listening for FakeTCP/KCP connections on port: {}", control_port);
+
+                loop {
+                    match kcp_listener.accept().await {
+                        Ok((mut kcp_stream, addr)) => {
+                            let token_clone = token_owned.clone();
+                            let control_tx_clone = control_tx.clone();
+                            tokio::spawn(async move {
+                                // Wait for Client authentication header over reliable KCP
+                                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                                let token_auth = format!("Cheragh-Auth {}", token_clone);
+                                let mut buf = vec![0u8; token_auth.len()];
+                                if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), kcp_stream.read_exact(&mut buf)).await {
+                                    let auth_str = String::from_utf8_lossy(&buf);
+                                    if auth_str == token_auth {
+                                        // Send ACK back to the client
+                                        if kcp_stream.write_all(b"ACK").await.is_ok() && kcp_stream.flush().await.is_ok() {
+                                            println!("[SERVER] Authentic client connected from: {} (FakeTCP/KCP)", addr);
+                                            let _ = control_tx_clone.send(TransportStream::Kcp(kcp_stream)).await;
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            eprintln!("[SERVER] FakeTCP Kcp listener error: {}", e);
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        }
+                    }
+                }
+            } else if is_udp_protocol(&protocol_owned) {
                 // --- UDP Control Protocol Server ---
                 let mode = get_udp_mode(&protocol_owned);
                 let control_addr = format!("0.0.0.0:{}", control_port);
@@ -252,8 +299,39 @@ pub async fn run_client(
             "[CLIENT] Connecting to Iran Server {}:{} via '{}' (Failover index: {})...",
             current_ip, control_port, protocol, ip_index
         );
+        let control_addr = format!("{}:{}", current_ip, control_port);
 
-        let mut control_socket = if is_udp_protocol(protocol) {
+        let mut control_socket = if is_faketcp_protocol(protocol) {
+            println!("[CLIENT] Connecting via FakeTCP (KCP) to {}...", control_addr);
+            let config = kcp_tokio::KcpConfig::new().turbo_mode().stream_mode(true);
+            let client = crate::tunnel::faketcp::FakeTcpClient::new(control_addr.parse().unwrap(), "0.0.0.0:0".parse().unwrap());
+            
+            match client.connect(config).await {
+                Ok(mut s) => {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let auth = format!("Cheragh-Auth {}", token);
+                    if s.write_all(auth.as_bytes()).await.is_err() || s.flush().await.is_err() {
+                        eprintln!("[CLIENT] Failed to write auth token to FakeTCP stream");
+                        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                        continue;
+                    }
+                    let mut ack = [0u8; 3];
+                    match tokio::time::timeout(tokio::time::Duration::from_secs(5), s.read_exact(&mut ack)).await {
+                        Ok(Ok(_)) if &ack == b"ACK" => TransportStream::Kcp(s),
+                        _ => {
+                            eprintln!("[CLIENT] FakeTCP KCP authentication failed on server {}", current_ip);
+                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[CLIENT] Failed to establish FakeTCP KCP connection: {}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+            }
+        } else if is_udp_protocol(protocol) {
             // --- UDP Client Transport ---
             let socket = match UdpSocket::bind("0.0.0.0:0").await {
                 Ok(s) => s,

@@ -51,3 +51,5 @@ rcgen = "0.12.0"
 tokio-tungstenite = "0.21.0"
 yamux = "0.10.1"
 tokio-util = { version = "0.7.13", features = ["compat"] }
+kcp-tokio = "0.7.0"
+pnet = "0.35.0"
