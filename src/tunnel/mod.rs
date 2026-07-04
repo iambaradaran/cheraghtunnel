@@ -506,6 +506,7 @@ pub async fn run_client(
         }
 
         ip_index = 0;
-        println!("[CLIENT] Yamux session ended. Reconnecting...");
+        println!("[CLIENT] Yamux session ended. Reconnecting in 3s...");
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
     }
 }
