@@ -402,6 +402,24 @@ fn get_server_tls_config() -> Result<Arc<rustls::ServerConfig>, Box<dyn Error + 
     Ok(config)
 }
 
+fn extract_domain(decoy: &str) -> String {
+    let mut host = decoy.trim();
+    if host.starts_with("https://") {
+        host = &host[8..];
+    } else if host.starts_with("http://") {
+        host = &host[7..];
+    }
+    // Strip any path
+    if let Some(pos) = host.find('/') {
+        host = &host[..pos];
+    }
+    // Strip any port
+    if let Some(pos) = host.find(':') {
+        host = &host[..pos];
+    }
+    host.to_string()
+}
+
 // Generates a simple TLS client config that trusts all certificates (necessary for self-signed keys)
 #[derive(Debug)]
 struct NoCertificateVerification;
@@ -537,7 +555,7 @@ pub async fn client_handshake(
     token: &str,
     decoy: Option<String>,
 ) -> Result<TransportStream, Box<dyn Error + Send + Sync>> {
-    let decoy_str = decoy.unwrap_or_else(|| "google.com".to_string());
+    let decoy_str = extract_domain(&decoy.unwrap_or_else(|| "google.com".to_string()));
     match protocol {
         "beam" | "tcpmux" | "photon" | "quantummux" => {
             let auth = format!("{}{}", PSK_HEADER_PREFIX, token);

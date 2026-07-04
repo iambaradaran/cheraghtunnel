@@ -41,7 +41,7 @@ enum Commands {
         token: String,
 
         /// Protocol (beam, aura, nova, glimmer, beacon, flash, ray, photon, lantern, mirage, halo, hysteria)
-        #[arg(short, long, default_value = "beam")]
+        #[arg(long, default_value = "beam")]
         protocol: String,
 
         /// Custom decoy website URL or local path for Mirage/Aura
@@ -71,7 +71,7 @@ enum Commands {
         token: String,
 
         /// Protocol (beam, aura, nova, glimmer, beacon, flash, ray, photon, lantern, mirage, halo, hysteria)
-        #[arg(short, long, default_value = "beam")]
+        #[arg(long, default_value = "beam")]
         protocol: String,
 
         /// Tunnel ID for tracking traffic speeds
