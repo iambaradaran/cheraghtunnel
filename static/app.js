@@ -128,11 +128,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Close command modal
-    document.getElementById('close-cmd-modal').addEventListener('click', () => {
-        document.getElementById('cmd-modal').style.display = 'none';
-    });
-
 
     document.getElementById('open-add-node-modal').addEventListener('click', () => {
         document.getElementById('add-node-modal').style.display = 'flex';
