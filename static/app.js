@@ -314,13 +314,6 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error(err);
         }
     });
-            if (res && res.ok) {
-                loadTunnels();
-            }
-        } catch (err) {
-            console.error(err);
-        }
-    });
 });
 
 function showDashboard() {
