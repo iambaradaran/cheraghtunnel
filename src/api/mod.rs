@@ -156,7 +156,7 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
                 for t in tunnels {
                     if let Some(id) = t.id {
                         if let Some(info) = active_servers.get(&id) {
-                            let mut pool = info.controls.lock().await;
+                            let pool = info.controls.lock().await;
                             if !pool.is_empty() {
                                 // Send native Yamux ping to the first active node in the pool to measure RTT
                                 let mut ctrl = pool[0].clone();
@@ -356,7 +356,7 @@ struct CloneDecoyPayload {
 }
 
 async fn clone_decoy_handler(
-    Extension(state): Extension<Arc<AppState>>,
+    Extension(_state): Extension<Arc<AppState>>,
     axum::extract::Path(_id): axum::extract::Path<i64>,
     Json(payload): Json<CloneDecoyPayload>,
 ) -> impl IntoResponse {

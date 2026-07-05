@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
 use crate::tunnel::multiplex::{connect_to_local, pipe_streams_monitored};
@@ -386,7 +385,7 @@ pub async fn run_server(
         let mut attempts = 0;
         
         loop {
-            let mut pool = active_controls.lock().await;
+            let pool = active_controls.lock().await;
             if pool.is_empty() {
                 drop(pool);
                 // Wait briefly for at least one client node to connect
@@ -485,7 +484,7 @@ pub async fn run_client(
                 );
                 let control_addr = format!("{}:{}", current_ip, active_control_port);
 
-                let mut control_socket = if is_faketcp_protocol(&protocol_clone) {
+                let control_socket = if is_faketcp_protocol(&protocol_clone) {
                     println!("[CLIENT-WORKER-{}] Connecting via FakeTCP (KCP) to {} with MTU {}...", worker_id, control_addr, dynamic_mtu);
                     let mut config = kcp_tokio::KcpConfig::new().turbo_mode().stream_mode(true);
                     config.snd_wnd = 2048;

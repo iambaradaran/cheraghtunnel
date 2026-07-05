@@ -1,8 +1,8 @@
 use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet, checksum as ipv4_header_checksum};
+use pnet::packet::ipv4::{MutableIpv4Packet, checksum as ipv4_header_checksum};
 use pnet::packet::tcp::{MutableTcpPacket, TcpFlags, TcpPacket, ipv4_checksum};
-use pnet::packet::{MutablePacket, Packet};
-use pnet::transport::{transport_channel, TransportChannelType, TransportProtocol};
+use pnet::packet::Packet;
+use pnet::transport::{transport_channel, TransportChannelType};
 use rand::Rng;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
