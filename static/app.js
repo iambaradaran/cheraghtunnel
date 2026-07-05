@@ -472,6 +472,42 @@ async function apiFetch(url, options = {}) {
     }
 }
 
+async function showEditModal(id) {
+    try {
+        const res = await apiFetch(`/api/tunnels/${id}`);
+        if (!res || !res.ok) return;
+        const t = await res.json();
+        
+        document.getElementById('edit-tunnel-id').value = t.id;
+        document.getElementById('edit-tunnel-name').value = t.name;
+        document.getElementById('edit-tunnel-protocol').value = t.protocol;
+        document.getElementById('edit-iran-port').value = t.iran_port;
+        document.getElementById('edit-control-port').value = t.control_port;
+        document.getElementById('edit-kharej-port').value = t.kharej_port;
+        document.getElementById('edit-backup-ips').value = t.backup_ips || '';
+        
+        let initialOpts = null;
+        if (t.transport_options) {
+            try { initialOpts = JSON.parse(t.transport_options); } catch (e) {}
+        }
+        renderDynamicOptions(t.protocol, 'edit-dynamic-options-container', initialOpts);
+        document.getElementById('edit-tunnel-token').value = t.token;
+        document.getElementById('edit-decoy-url').value = t.decoy_url || '';
+        document.getElementById('edit-tunnel-hopping').checked = t.port_hopping === 1;
+        document.getElementById('edit-quota-limit').value = t.quota_limit_bytes ? (t.quota_limit_bytes / (1024 * 1024 * 1024)).toFixed(1) : 0;
+        document.getElementById('edit-speed-limit').value = t.speed_limit_kbps || 0;
+        document.getElementById('edit-tunnel-iran-select').value = t.iran_node_id || '';
+        document.getElementById('edit-tunnel-kharej-select').value = t.kharej_node_id || '';
+        if (window.toggleDecoyVisibility) {
+            window.toggleDecoyVisibility(t.protocol, 'edit-decoy-group');
+        }
+        
+        document.getElementById('edit-modal').style.display = 'flex';
+    } catch (err) {
+        console.error(err);
+    }
+}
+
 window.toggleTunnel = toggleTunnel;
 window.deleteTunnel = deleteTunnel;
 window.deleteNode = deleteNode;
