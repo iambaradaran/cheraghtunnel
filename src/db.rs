@@ -7,6 +7,8 @@ use sha2::{Sha256, Digest};
 pub struct Tunnel {
     pub id: Option<i64>,
     pub name: String,
+    pub iran_node_id: Option<i64>,
+    pub kharej_node_id: Option<i64>,
     pub protocol: String,
     pub iran_port: u16,
     pub kharej_port: u16,
@@ -26,6 +28,18 @@ pub struct Tunnel {
     pub speed_limit_kbps: Option<i32>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Node {
+    pub id: Option<i64>,
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: Option<String>,
+    pub private_key: Option<String>,
+    pub role: String,
+}
+
 pub fn get_db_conn(db_path: &Path) -> Result<Connection> {
     Connection::open(db_path)
 }
@@ -38,6 +52,8 @@ pub fn init_db(db_path: &Path) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS tunnels (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
+            iran_node_id INTEGER,
+            kharej_node_id INTEGER,
             protocol TEXT NOT NULL,
             iran_port INTEGER NOT NULL,
             kharej_port INTEGER NOT NULL,
@@ -45,16 +61,20 @@ pub fn init_db(db_path: &Path) -> Result<()> {
             token TEXT NOT NULL,
             decoy_url TEXT,
             backup_ips TEXT,
+            transport_options TEXT,
             status TEXT NOT NULL,
-            stats_rx INTEGER DEFAULT 0,
-            stats_tx INTEGER DEFAULT 0,
-            stats_speed_rx INTEGER DEFAULT 0,
-            stats_speed_tx INTEGER DEFAULT 0
+            stats_rx INTEGER NOT NULL DEFAULT 0,
+            stats_tx INTEGER NOT NULL DEFAULT 0,
+            stats_speed_rx INTEGER NOT NULL DEFAULT 0,
+            stats_speed_tx INTEGER NOT NULL DEFAULT 0,
+            port_hopping INTEGER DEFAULT 0,
+            quota_limit_bytes INTEGER DEFAULT 0,
+            quota_used_bytes INTEGER DEFAULT 0,
+            speed_limit_kbps INTEGER DEFAULT 0
         )",
         [],
     )?;
 
-    let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN backup_ips TEXT", []);
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN transport_options TEXT", []);
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN stats_speed_rx INTEGER DEFAULT 0", []);
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN stats_speed_tx INTEGER DEFAULT 0", []);
@@ -84,6 +104,27 @@ pub fn init_db(db_path: &Path) -> Result<()> {
         )",
         [],
     )?;
+
+    // Create nodes table
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS nodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            host TEXT NOT NULL,
+            port INTEGER NOT NULL DEFAULT 22,
+            username TEXT NOT NULL DEFAULT 'root',
+            password TEXT,
+            private_key TEXT,
+            role TEXT NOT NULL DEFAULT 'both'
+        )",
+        [],
+    )?;
+
+    // Migrations for existing DBs
+    let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN iran_node_id INTEGER", []);
+    let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN kharej_node_id INTEGER", []);
+    let _ = conn.execute("ALTER TABLE nodes ADD COLUMN private_key TEXT", []);
+    let _ = conn.execute("ALTER TABLE nodes ADD COLUMN role TEXT NOT NULL DEFAULT 'both'", []);
 
     // Create default admin settings if not present
     let count: i64 = conn.query_row(
@@ -120,7 +161,7 @@ pub fn init_db(db_path: &Path) -> Result<()> {
 pub fn get_tunnels(db_path: &Path) -> Result<Vec<Tunnel>> {
     let conn = get_db_conn(db_path)?;
     let mut stmt = conn.prepare(
-        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx, port_hopping, quota_limit_bytes, quota_used_bytes, speed_limit_kbps FROM tunnels"
+        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx, port_hopping, quota_limit_bytes, quota_used_bytes, speed_limit_kbps, iran_node_id, kharej_node_id FROM tunnels"
     )?;
     
     let tunnel_iter = stmt.query_map([], |row| {
@@ -148,6 +189,8 @@ pub fn get_tunnels(db_path: &Path) -> Result<Vec<Tunnel>> {
             quota_limit_bytes: row.get(16)?,
             quota_used_bytes: row.get(17)?,
             speed_limit_kbps: row.get(18)?,
+            iran_node_id: row.get(19).unwrap_or(None),
+            kharej_node_id: row.get(20).unwrap_or(None),
         })
     })?;
 
@@ -161,7 +204,7 @@ pub fn get_tunnels(db_path: &Path) -> Result<Vec<Tunnel>> {
 pub fn get_tunnel_by_id(db_path: &Path, id: i64) -> Result<Option<Tunnel>> {
     let conn = get_db_conn(db_path)?;
     let mut stmt = conn.prepare(
-        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx, port_hopping, quota_limit_bytes, quota_used_bytes, speed_limit_kbps FROM tunnels WHERE id = ?1"
+        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx, port_hopping, quota_limit_bytes, quota_used_bytes, speed_limit_kbps, iran_node_id, kharej_node_id FROM tunnels WHERE id = ?1"
     )?;
     
     let mut rows = stmt.query_map(params![id], |row| {
@@ -189,6 +232,8 @@ pub fn get_tunnel_by_id(db_path: &Path, id: i64) -> Result<Option<Tunnel>> {
             quota_limit_bytes: row.get(16)?,
             quota_used_bytes: row.get(17)?,
             speed_limit_kbps: row.get(18)?,
+            iran_node_id: row.get(19).unwrap_or(None),
+            kharej_node_id: row.get(20).unwrap_or(None),
         })
     })?;
 
@@ -202,8 +247,8 @@ pub fn get_tunnel_by_id(db_path: &Path, id: i64) -> Result<Option<Tunnel>> {
 pub fn create_tunnel(db_path: &Path, tunnel: &Tunnel) -> Result<i64> {
     let conn = get_db_conn(db_path)?;
     conn.execute(
-        "INSERT INTO tunnels (name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx, port_hopping, quota_limit_bytes, quota_used_bytes, speed_limit_kbps)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 0, 0, 0, ?11, ?12, ?13, ?14)",
+        "INSERT INTO tunnels (name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx, port_hopping, quota_limit_bytes, quota_used_bytes, speed_limit_kbps, iran_node_id, kharej_node_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 0, 0, 0, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             tunnel.name,
             tunnel.protocol,
@@ -219,6 +264,8 @@ pub fn create_tunnel(db_path: &Path, tunnel: &Tunnel) -> Result<i64> {
             tunnel.quota_limit_bytes.unwrap_or(0),
             tunnel.quota_used_bytes.unwrap_or(0),
             tunnel.speed_limit_kbps.unwrap_or(0),
+            tunnel.iran_node_id,
+            tunnel.kharej_node_id,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -239,13 +286,11 @@ pub fn update_tunnel_status(db_path: &Path, id: i64, status: &str) -> Result<()>
     Ok(())
 }
 
-pub fn update_tunnel_speeds(db_path: &Path, id: i64, rx_bytes: u64, tx_bytes: u64) -> Result<()> {
+pub fn update_tunnel_speeds(db_path: &Path, id: i64, rx_delta: u64, tx_delta: u64, speed_rx: u64, speed_tx: u64) -> Result<()> {
     let conn = get_db_conn(db_path)?;
-    // stats_speed_rx/tx = current speed snapshot (bytes transferred in last interval)
-    // stats_rx/tx = cumulative total bytes transferred
     conn.execute(
-        "UPDATE tunnels SET stats_speed_rx = ?1, stats_speed_tx = ?2, stats_rx = stats_rx + ?1, stats_tx = stats_tx + ?2 WHERE id = ?3",
-        params![rx_bytes as i64, tx_bytes as i64, id],
+        "UPDATE tunnels SET stats_speed_rx = ?1, stats_speed_tx = ?2, stats_rx = stats_rx + ?3, stats_tx = stats_tx + ?4 WHERE id = ?5",
+        params![speed_rx as i64, speed_tx as i64, rx_delta as i64, tx_delta as i64, id],
     )?;
     Ok(())
 }
@@ -275,8 +320,11 @@ pub fn set_setting(db_path: &Path, key: &str, value: &str) -> Result<()> {
 pub fn update_tunnel(db_path: &Path, id: i64, tunnel: &Tunnel) -> Result<()> {
     let conn = get_db_conn(db_path)?;
     conn.execute(
-        "UPDATE tunnels SET name=?1, protocol=?2, iran_port=?3, kharej_port=?4, control_port=?5, token=?6, decoy_url=?7, backup_ips=?8, transport_options=?9, port_hopping=?10, quota_limit_bytes=?11, quota_used_bytes=?12, speed_limit_kbps=?13
-         WHERE id=?14",
+        "UPDATE tunnels 
+         SET name = ?1, protocol = ?2, iran_port = ?3, kharej_port = ?4, control_port = ?5, 
+             token = ?6, decoy_url = ?7, backup_ips = ?8, transport_options = ?9,
+             port_hopping = ?10, quota_limit_bytes = ?11, quota_used_bytes = ?12, speed_limit_kbps = ?13, iran_node_id = ?14, kharej_node_id = ?15
+         WHERE id = ?16",
         params![
             tunnel.name,
             tunnel.protocol,
@@ -291,7 +339,9 @@ pub fn update_tunnel(db_path: &Path, id: i64, tunnel: &Tunnel) -> Result<()> {
             tunnel.quota_limit_bytes.unwrap_or(0),
             tunnel.quota_used_bytes.unwrap_or(0),
             tunnel.speed_limit_kbps.unwrap_or(0),
-            id
+            tunnel.iran_node_id,
+            tunnel.kharej_node_id,
+            id,
         ],
     )?;
     Ok(())
@@ -363,5 +413,72 @@ pub fn get_telemetry_logs(db_path: &Path, tunnel_id: i64, limit: usize) -> Resul
     // Reverse to chronological order for charts
     logs.reverse();
     Ok(logs)
+}
+
+// -------------------------------------------------------------
+// Nodes CRUD
+// -------------------------------------------------------------
+
+pub fn get_nodes(db_path: &Path) -> Result<Vec<Node>> {
+    let conn = get_db_conn(db_path)?;
+    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, private_key, role FROM nodes")?;
+    
+    let node_iter = stmt.query_map([], |row| {
+        Ok(Node {
+            id: Some(row.get(0)?),
+            name: row.get(1)?,
+            host: row.get(2)?,
+            port: row.get(3)?,
+            username: row.get(4)?,
+            password: row.get(5)?,
+            private_key: row.get(6)?,
+            role: row.get(7)?,
+        })
+    })?;
+
+    let mut list = Vec::new();
+    for n in node_iter {
+        list.push(n?);
+    }
+    Ok(list)
+}
+
+pub fn get_node_by_id(db_path: &Path, id: i64) -> Result<Option<Node>> {
+    let conn = get_db_conn(db_path)?;
+    let mut stmt = conn.prepare("SELECT id, name, host, port, username, password, private_key, role FROM nodes WHERE id = ?1")?;
+    
+    let mut rows = stmt.query_map(params![id], |row| {
+        Ok(Node {
+            id: Some(row.get(0)?),
+            name: row.get(1)?,
+            host: row.get(2)?,
+            port: row.get(3)?,
+            username: row.get(4)?,
+            password: row.get(5)?,
+            private_key: row.get(6)?,
+            role: row.get(7)?,
+        })
+    })?;
+
+    if let Some(row) = rows.next() {
+        Ok(Some(row?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn create_node(db_path: &Path, node: &Node) -> Result<i64> {
+    let conn = get_db_conn(db_path)?;
+    conn.execute(
+        "INSERT INTO nodes (name, host, port, username, password, private_key, role) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![node.name, node.host, node.port, node.username, node.password, node.private_key, node.role],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn delete_node(db_path: &Path, id: i64) -> Result<()> {
+    let conn = get_db_conn(db_path)?;
+    conn.execute("DELETE FROM nodes WHERE id = ?1", params![id])?;
+    Ok(())
 }
 

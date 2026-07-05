@@ -51,6 +51,10 @@ enum Commands {
         /// Enable Dynamic Port Hopping
         #[arg(long, default_value_t = false)]
         port_hopping: bool,
+
+        /// Internal API port for Master Panel telemetry
+        #[arg(long)]
+        api_port: Option<u16>,
     },
     /// Start the tunnel client node (Kharej server)
     Client {
@@ -118,11 +122,12 @@ async fn main() {
             protocol,
             decoy,
             port_hopping,
+            api_port,
         } => {
             println!("Starting CheraghTunnel Server on control port {}, forwarding public port {} via protocol '{}'...",
                      control_port, public_port, protocol);
             let active_controls = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-            if let Err(e) = tunnel::run_server(control_port, public_port, &token, &protocol, decoy, 0, active_controls, port_hopping).await {
+            if let Err(e) = tunnel::run_server(control_port, public_port, &token, &protocol, decoy, 0, active_controls, port_hopping, api_port).await {
                 eprintln!("Server tunnel error: {}", e);
                 std::process::exit(1);
             }

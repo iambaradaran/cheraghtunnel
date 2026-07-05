@@ -47,6 +47,7 @@ impl Drop for IptablesGuard {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn craft_tcp_ip_packet(
     src_ip: Ipv4Addr, dst_ip: Ipv4Addr,
     src_port: u16, dst_port: u16,
@@ -184,7 +185,7 @@ impl FakeTcpClient {
             }
         });
 
-        Ok(KcpStream::connect(local_udp, config).await.map_err(|e| e.to_string())?)
+        KcpStream::connect(local_udp, config).await.map_err(|e| e.to_string())
     }
 }
 

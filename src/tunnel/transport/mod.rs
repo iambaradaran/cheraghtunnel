@@ -802,6 +802,7 @@ pub async fn client_handshake(
 }
 
 /// Server handshake logic to authenticate client and wrap standard TcpStream
+#[allow(clippy::result_large_err)]
 pub async fn server_handshake(
     mut socket: TcpStream,
     protocol: &str,
@@ -868,15 +869,10 @@ pub async fn server_handshake(
             let tls_stream = acceptor.accept(socket).await?;
             
             let mut stream = TransportStream::TlsServer(tls_stream);
-            let mut buf = vec![0u8; expected.len()];
-            stream.read_exact(&mut buf).await?;
-            let auth = String::from_utf8_lossy(&buf);
-            if auth != expected {
+            if let Err(e) = perform_server_handshake_check(&mut stream, token).await {
                 let _ = send_decoy_response(&mut stream, decoy).await;
-                return Err("Nova client TLS auth failed".into());
+                return Err(e);
             }
-            stream.write_all(b"ACK").await?;
-            stream.flush().await?;
             Ok(stream)
         }
         "beacon" | "wssmux" => {

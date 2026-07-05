@@ -50,7 +50,7 @@ pub fn get_hopped_port(base_port: u16, token: &str, epoch: u64) -> u16 {
     use sha2::{Sha256, Digest};
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
-    hasher.update(&epoch.to_be_bytes());
+    hasher.update(epoch.to_be_bytes());
     let hash = hasher.finalize();
     let offset = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]) % 20; // Rotate over a range of 20 ports
     base_port + offset as u16
@@ -183,6 +183,7 @@ fn spawn_protocol_listener(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_server(
     control_port: u16,
     public_port: u16,
@@ -192,6 +193,7 @@ pub async fn run_server(
     tunnel_id: i64,
     active_controls: Arc<tokio::sync::Mutex<Vec<yamux::Control>>>,
     port_hopping: bool,
+    api_port: Option<u16>,
 ) -> Result<(), Box<dyn Error>> {
     println!(
         "[SERVER] Launching protocol: '{}' on control port: {}, public port: {}, Port Hopping: {}",
@@ -209,6 +211,68 @@ pub async fn run_server(
     let token_owned = token.to_string();
     let protocol_owned = protocol.to_string();
     let decoy_owned = decoy.clone();
+    
+    // Telemetry API & Ping Loop
+    if let Some(port) = api_port {
+        let controls_ping = active_controls.clone();
+        tokio::spawn(async move {
+            // Background ping loop
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                let pool = controls_ping.lock().await;
+                if !pool.is_empty() {
+                    let mut ctrl = pool[0].clone();
+                    drop(pool);
+                    let start = tokio::time::Instant::now();
+                    if let Ok(Ok(stream)) = tokio::time::timeout(tokio::time::Duration::from_secs(3), ctrl.open_stream()).await {
+                        let rtt_ms = start.elapsed().as_secs_f64() * 1000.0;
+                        drop(stream);
+                        let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
+                        tracker.rtt_ms.store(rtt_ms as u32, std::sync::atomic::Ordering::Relaxed);
+                    } else {
+                        let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
+                        tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
+                    }
+                } else {
+                    drop(pool);
+                    let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
+                    tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        });
+
+        tokio::spawn(async move {
+            use axum::{routing::get, Router, Json};
+            let app = Router::new().route("/api/stats", get(move || async move {
+                let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
+                // Get and reset rx/tx so it acts as a delta since last poll
+                let rx_delta = tracker.rx_bytes.swap(0, std::sync::atomic::Ordering::Relaxed);
+                let tx_delta = tracker.tx_bytes.swap(0, std::sync::atomic::Ordering::Relaxed);
+                let rtt = tracker.rtt_ms.load(std::sync::atomic::Ordering::Relaxed);
+                
+                let current_time = std::time::Instant::now();
+                let mut last_time = tracker.last_time.lock().unwrap();
+                let elapsed = current_time.duration_since(*last_time).as_secs_f64();
+                *last_time = current_time;
+                
+                let speed_rx = if elapsed > 0.0 { (rx_delta as f64 / elapsed) as u64 } else { 0 };
+                let speed_tx = if elapsed > 0.0 { (tx_delta as f64 / elapsed) as u64 } else { 0 };
+
+                let payload = serde_json::json!({
+                    "rtt_ms": if rtt == 999 { 999.0 } else { rtt as f64 },
+                    "packet_loss": if rtt == 999 { 100.0 } else { 0.0 },
+                    "rx_delta": rx_delta,
+                    "tx_delta": tx_delta,
+                    "speed_rx": speed_rx,
+                    "speed_tx": speed_tx
+                });
+                Json(payload)
+            }));
+            let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await.unwrap();
+            println!("[SERVER] Telemetry API listening on port {}", port);
+            axum::serve(listener, app).await.unwrap();
+        });
+    }
 
     // Spawn task to accept and authenticate control connections from client nodes.
     // Wrap in LoopGuard so the task is auto-aborted when run_server returns.
@@ -230,16 +294,14 @@ pub async fn run_server(
                         let p_next = get_hopped_port(control_port, &token_owned, epoch + 1);
 
                         // Start p_curr if not active
-                        if !active_listeners.contains_key(&p_curr) {
-                            let handle = spawn_protocol_listener(p_curr, protocol_owned.clone(), token_owned.clone(), decoy_owned.clone(), control_tx.clone());
-                            active_listeners.insert(p_curr, handle);
-                        }
+                        active_listeners.entry(p_curr).or_insert_with(|| {
+                            spawn_protocol_listener(p_curr, protocol_owned.clone(), token_owned.clone(), decoy_owned.clone(), control_tx.clone())
+                        });
 
                         // Start p_next if not active
-                        if !active_listeners.contains_key(&p_next) {
-                            let handle = spawn_protocol_listener(p_next, protocol_owned.clone(), token_owned.clone(), decoy_owned.clone(), control_tx.clone());
-                            active_listeners.insert(p_next, handle);
-                        }
+                        active_listeners.entry(p_next).or_insert_with(|| {
+                            spawn_protocol_listener(p_next, protocol_owned.clone(), token_owned.clone(), decoy_owned.clone(), control_tx.clone())
+                        });
 
                         // Evict old listeners
                         let active_ports: Vec<u16> = active_listeners.keys().cloned().collect();
@@ -431,6 +493,7 @@ pub async fn run_server(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_client(
     server_ips: &str,
     control_port: u16,

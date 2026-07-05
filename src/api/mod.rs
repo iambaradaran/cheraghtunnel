@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tokio::sync::Mutex;
-use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use rust_embed::RustEmbed;
 use sysinfo::System;
@@ -75,15 +74,11 @@ impl LoginRateLimiter {
     }
 }
 
-pub struct ActiveServerInfo {
-    pub handle: tokio::task::JoinHandle<()>,
-    pub controls: Arc<tokio::sync::Mutex<Vec<yamux::Control>>>,
-}
 
 // Global state to track active tunnel tasks
 pub struct AppState {
     pub db_path: PathBuf,
-    pub active_servers: Mutex<HashMap<i64, ActiveServerInfo>>,
+    
     pub session_token: Mutex<Option<String>>,
     pub system_monitor: Mutex<System>,
     pub login_limiter: LoginRateLimiter,
@@ -97,94 +92,41 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
 
     let state = Arc::new(AppState {
         db_path: db_path.clone(),
-        active_servers: Mutex::new(HashMap::new()),
+        
         session_token: Mutex::new(None),
         system_monitor: Mutex::new(sys),
         login_limiter: LoginRateLimiter::new(),
     });
 
-    // Spawn background speed stats flusher and limits synchronization task
+    
+    // Spawn background telemetry fetcher for remote nodes
     let db_path_clone = db_path.clone();
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             
-            // Get registry values and flush them to sqlite
-            let registry = crate::tunnel::multiplex::TRAFFIC_REGISTRY.get();
-            if let Some(reg) = registry {
-                let map = reg.lock().unwrap();
-                for (id, tracker) in map.iter() {
-                    let rx_bytes = tracker.rx_bytes.swap(0, std::sync::atomic::Ordering::SeqCst);
-                    let tx_bytes = tracker.tx_bytes.swap(0, std::sync::atomic::Ordering::SeqCst);
-                    
-                    // Update live speed snapshot and add to cumulative total in DB
-                    if let Err(e) = db::update_tunnel_speeds(&db_path_clone, *id, rx_bytes, tx_bytes) {
-                        eprintln!("Failed to update speeds for tunnel {}: {}", id, e);
-                    }
-
-                    // Sync limits from database dynamically
-                    if let Ok(Some(tunnel)) = db::get_tunnel_by_id(&db_path_clone, *id) {
-                        let total_used = tunnel.stats_rx + tunnel.stats_tx;
-                        tracker.quota_limit.store(tunnel.quota_limit_bytes.unwrap_or(0) as u64, std::sync::atomic::Ordering::Relaxed);
-                        tracker.quota_used.store(total_used, std::sync::atomic::Ordering::Relaxed);
-                        tracker.speed_limit.store(tunnel.speed_limit_kbps.unwrap_or(0) as u32, std::sync::atomic::Ordering::Relaxed);
-                    }
-                }
-            }
-        }
-    });
-
-    // Spawn background system monitor refresh (every 2s so CPU readings are accurate)
-    let state_mon = state.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-            let mut sys = state_mon.system_monitor.lock().await;
-            sys.refresh_cpu();
-            sys.refresh_memory();
-        }
-    });
-
-    // Spawn background telemetry collector (runs every 10 seconds to sample active tunnels RTT and loss)
-    let state_tel = state.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-            
-            if let Ok(tunnels) = db::get_tunnels(&state_tel.db_path) {
-                let active_servers = state_tel.active_servers.lock().await;
+            if let Ok(tunnels) = db::get_tunnels(&db_path_clone) {
                 for t in tunnels {
-                    if let Some(id) = t.id {
-                        if let Some(info) = active_servers.get(&id) {
-                            let pool = info.controls.lock().await;
-                            if !pool.is_empty() {
-                                // Send native Yamux ping to the first active node in the pool to measure RTT
-                                let mut ctrl = pool[0].clone();
-                                drop(pool); // Release lock during ping to prevent blocking other handshakes
+                    if t.status == "active" {
+                        if let Some(iran_id) = t.iran_node_id {
+                            if let Ok(Some(iran_node)) = db::get_node_by_id(&db_path_clone, iran_id) {
+                                let api_port = 18000 + t.id.unwrap_or(0) as u16;
+                                let url = format!("http://{}:{}/api/stats", iran_node.host, api_port);
                                 
-                                let start = tokio::time::Instant::now();
-                                match tokio::time::timeout(tokio::time::Duration::from_secs(3), ctrl.open_stream()).await {
-                                    Ok(Ok(stream)) => {
-                                        let rtt_ms = start.elapsed().as_secs_f64() * 1000.0;
-                                        drop(stream); // Close test stream immediately
-                                        let _ = db::insert_telemetry(&state_tel.db_path, id, rtt_ms, 0.0);
+                                if let Ok(resp) = reqwest::get(&url).await {
+                                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                        let rx_delta = json["rx_delta"].as_u64().unwrap_or(0);
+                                        let tx_delta = json["tx_delta"].as_u64().unwrap_or(0);
+                                        let speed_rx = json["speed_rx"].as_u64().unwrap_or(0);
+                                        let speed_tx = json["speed_tx"].as_u64().unwrap_or(0);
+                                        let rtt_ms = json["rtt_ms"].as_f64().unwrap_or(999.0);
+                                        let loss = json["packet_loss"].as_f64().unwrap_or(100.0);
                                         
-                                        let tracker = crate::tunnel::multiplex::get_traffic_tracker(id);
-                                        tracker.rtt_ms.store(rtt_ms as u32, std::sync::atomic::Ordering::Relaxed);
-                                    }
-                                    _ => {
-                                        // Ping failed or timed out, log 100% packet loss
-                                        let _ = db::insert_telemetry(&state_tel.db_path, id, 999.0, 100.0);
-                                        let tracker = crate::tunnel::multiplex::get_traffic_tracker(id);
-                                        tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
+                                        let _ = db::update_tunnel_speeds(&db_path_clone, t.id.unwrap(), rx_delta, tx_delta, speed_rx, speed_tx);
+                                        
+                                        let _ = db::insert_telemetry(&db_path_clone, t.id.unwrap(), rtt_ms, loss);
                                     }
                                 }
-                            } else {
-                                drop(pool);
-                                // No nodes active in the pool yet, record 100% loss
-                                let _ = db::insert_telemetry(&state_tel.db_path, id, 999.0, 100.0);
-                                let tracker = crate::tunnel::multiplex::get_traffic_tracker(id);
-                                tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
                             }
                         }
                     }
@@ -210,8 +152,9 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
         .route("/api/tunnels/:id/toggle", post(toggle_tunnel_handler))
         .route("/api/tunnels/:id/deploy", post(deploy_tunnel_handler))
         .route("/api/tunnels/:id/telemetry", get(telemetry_handler))
-        .route("/api/tunnels/:id/clone-decoy", post(clone_decoy_handler))
         .route("/api/stats", get(stats_handler))
+        .route("/api/nodes", get(get_nodes_handler).post(create_node_handler))
+        .route("/api/nodes/:id", axum::routing::delete(delete_node_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let app = public_routes
@@ -350,56 +293,6 @@ async fn telemetry_handler(
     }
 }
 
-#[derive(Deserialize)]
-struct CloneDecoyPayload {
-    url: String,
-}
-
-async fn clone_decoy_handler(
-    Extension(_state): Extension<Arc<AppState>>,
-    axum::extract::Path(_id): axum::extract::Path<i64>,
-    Json(payload): Json<CloneDecoyPayload>,
-) -> impl IntoResponse {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build();
-    let client = match client {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response(),
-    };
-
-    match client.get(&payload.url).send().await {
-        Ok(response) => {
-            if let Ok(body) = response.text().await {
-                let without_proto = if let Some(stripped) = payload.url.strip_prefix("https://") {
-                    stripped
-                } else if let Some(stripped) = payload.url.strip_prefix("http://") {
-                    stripped
-                } else {
-                    &payload.url
-                };
-                let host = without_proto.split('/').next().unwrap_or(&payload.url);
-                let domain = host.split(':').next().unwrap_or(host).to_string();
-
-                let dir_path = std::path::Path::new("static/decoys");
-                if let Err(e) = std::fs::create_dir_all(dir_path) {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(format!("Failed to create decoy dir: {}", e))).into_response();
-                }
-
-                let file_path = dir_path.join(format!("{}.html", domain));
-                if let Err(e) = std::fs::write(file_path, body) {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(format!("Failed to write decoy file: {}", e))).into_response();
-                }
-
-                (StatusCode::OK, Json("Successfully cloned decoy website!")).into_response()
-            } else {
-                (StatusCode::BAD_REQUEST, Json("Failed to read response body text")).into_response()
-            }
-        }
-        Err(e) => (StatusCode::BAD_REQUEST, Json(format!("Failed to fetch decoy: {}", e))).into_response(),
-    }
-}
-
 // Tunnel Management Handlers
 async fn get_tunnels_handler(Extension(state): Extension<Arc<AppState>>) -> impl IntoResponse {
     match db::get_tunnels(&state.db_path) {
@@ -436,10 +329,22 @@ async fn delete_tunnel_handler(
     Extension(state): Extension<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> impl IntoResponse {
-    // First, stop the server if running
-    let mut servers = state.active_servers.lock().await;
-    if let Some(info) = servers.remove(&id) {
-        info.handle.abort();
+    if let Ok(Some(tunnel)) = db::get_tunnel_by_id(&state.db_path, id) {
+        if tunnel.status == "active" {
+            let state_clone = state.clone();
+            tokio::spawn(async move {
+                if let Some(i_id) = tunnel.iran_node_id {
+                    if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
+                        let _ = run_ssh_command(&n, &format!("systemctl stop cheragh-server-{} && systemctl disable cheragh-server-{}", id, id)).await;
+                    }
+                }
+                if let Some(k_id) = tunnel.kharej_node_id {
+                    if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, k_id) {
+                        let _ = run_ssh_command(&n, &format!("systemctl stop cheragh-node-{} && systemctl disable cheragh-node-{}", id, id)).await;
+                    }
+                }
+            });
+        }
     }
     
     match db::delete_tunnel(&state.db_path, id) {
@@ -480,21 +385,41 @@ async fn update_tunnel_handler(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 
-    let mut servers = state.active_servers.lock().await;
-    let was_active = servers.contains_key(&id);
-    if was_active {
-        if let Some(info) = servers.remove(&id) {
-            info.handle.abort();
-        }
-    }
-    drop(servers);
-
+    let tunnel_opt = db::get_tunnel_by_id(&state.db_path, id).unwrap_or(None);
+    let was_active = if let Some(t) = &tunnel_opt { t.status == "active" } else { false };
+    
     match db::update_tunnel(&state.db_path, id, &payload) {
         Ok(_) => {
             if was_active {
-                if let Some(t) = db::get_tunnel_by_id(&state.db_path, id).unwrap_or(None) {
-                    let _ = start_tunnel_server(state, &t, id).await;
-                }
+                let state_clone = state.clone();
+                tokio::spawn(async move {
+                    if let Ok(Some(tunnel)) = db::get_tunnel_by_id(&state_clone.db_path, id) {
+                        if let Some(i_id) = tunnel.iran_node_id {
+                            if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
+                                let server_script = generate_server_script(&tunnel);
+                                let cmd = format!("cat > /tmp/server.sh << 'EOF_SCRIPT'
+{}
+EOF_SCRIPT
+bash /tmp/server.sh && rm -f /tmp/server.sh", server_script);
+                                let _ = run_ssh_command(&n, &cmd).await;
+                            }
+                        }
+                        if let Some(k_id) = tunnel.kharej_node_id {
+                            if let Ok(Some(k_n)) = db::get_node_by_id(&state_clone.db_path, k_id) {
+                                if let Some(i_id) = tunnel.iran_node_id {
+                                    if let Ok(Some(i_n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
+                                        let client_script = generate_client_script(&tunnel, &i_n.host);
+                                        let cmd = format!("cat > /tmp/client.sh << 'EOF_SCRIPT'
+{}
+EOF_SCRIPT
+bash /tmp/client.sh && rm -f /tmp/client.sh", client_script);
+                                        let _ = run_ssh_command(&k_n, &cmd).await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
             }
             StatusCode::OK.into_response()
         }
@@ -502,252 +427,140 @@ async fn update_tunnel_handler(
     }
 }
 
-async fn start_tunnel_server(state: Arc<AppState>, tunnel: &db::Tunnel, id: i64) -> Result<(), String> {
-    let mut servers = state.active_servers.lock().await;
-    if servers.contains_key(&id) {
-        return Ok(());
-    }
-
-    let token = tunnel.token.clone();
-    let protocol = tunnel.protocol.clone();
-    let control_port = tunnel.control_port;
-    let public_port = tunnel.iran_port;
-    let decoy = tunnel.decoy_url.clone();
-
-    let port_hopping = tunnel.port_hopping.unwrap_or(0) == 1;
-
-    // Create pool for Round-Robin load balancing across multiple nodes
-    let active_controls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
-    let active_controls_clone = active_controls.clone();
-
-    // Spawn background server task passing correct tunnel ID and active_controls pool
-    let proto_spawn = protocol.clone();
-    let state_clone = state.clone();
-    let handle = tokio::spawn(async move {
-        if let Err(e) = crate::tunnel::run_server(control_port, public_port, &token, &proto_spawn, decoy, id, active_controls_clone, port_hopping).await {
-            eprintln!("Background tunnel server daemon error: {}", e);
-        }
-        let _ = db::update_tunnel_status(&state_clone.db_path, id, "inactive");
-        let mut servers = state_clone.active_servers.lock().await;
-        servers.remove(&id);
-    });
-
-    servers.insert(id, ActiveServerInfo { handle, controls: active_controls });
-    let _ = db::update_tunnel_status(&state.db_path, id, "active");
-    println!("Spawned background tunnel server daemon for id = {}, protocol = {}", id, protocol);
-    Ok(())
-}
 
 async fn toggle_tunnel_handler(
     Extension(state): Extension<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> impl IntoResponse {
     let tunnel_opt = db::get_tunnel_by_id(&state.db_path, id).unwrap_or(None);
-    
     let tunnel = match tunnel_opt {
         Some(t) => t,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    let mut servers = state.active_servers.lock().await;
-
-    if servers.contains_key(&id) {
-        // If active, stop it
-        if let Some(info) = servers.remove(&id) {
-            info.handle.abort();
-        }
+    if tunnel.status == "active" {
         let _ = db::update_tunnel_status(&state.db_path, id, "inactive");
-        println!("Aborted tunnel server daemon for id = {}", id);
-        (StatusCode::OK, Json("Tunnel stopped")).into_response()
+        
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Some(i_id) = tunnel.iran_node_id {
+                if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
+                    let _ = run_ssh_command(&n, &format!("systemctl stop cheragh-server-{}", tunnel.id.unwrap())).await;
+                }
+            }
+            if let Some(k_id) = tunnel.kharej_node_id {
+                if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, k_id) {
+                    let _ = run_ssh_command(&n, &format!("systemctl stop cheragh-node-{}", tunnel.id.unwrap())).await;
+                }
+            }
+        });
+        StatusCode::OK.into_response()
     } else {
-        drop(servers);
-        match start_tunnel_server(state, &tunnel, id).await {
-            Ok(_) => (StatusCode::OK, Json("Tunnel started")).into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-        }
+        let _ = db::update_tunnel_status(&state.db_path, id, "active");
+        
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Some(i_id) = tunnel.iran_node_id {
+                if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
+                    let _ = run_ssh_command(&n, &format!("systemctl start cheragh-server-{}", tunnel.id.unwrap())).await;
+                }
+            }
+            if let Some(k_id) = tunnel.kharej_node_id {
+                if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, k_id) {
+                    let _ = run_ssh_command(&n, &format!("systemctl start cheragh-node-{}", tunnel.id.unwrap())).await;
+                }
+            }
+        });
+        StatusCode::OK.into_response()
     }
 }
 
 // SSH Node Deployer Handler
 #[derive(Deserialize)]
 struct DeployRequest {
-    host: String,
-    port: u16,
-    username: String,
+    iran_node_id: Option<i64>,
+    kharej_node_id: Option<i64>,
+    save_node: Option<bool>,
+    node_name: Option<String>,
+    host: Option<String>,
+    port: Option<u16>,
+    username: Option<String>,
     password: Option<String>,
-    panel_host: String,
+    private_key: Option<String>,
+    role: Option<String>,
 }
 
-async fn deploy_tunnel_handler(
-    Extension(state): Extension<Arc<AppState>>,
-    axum::extract::Path(id): axum::extract::Path<i64>,
-    Json(payload): Json<DeployRequest>,
-) -> impl IntoResponse {
-    let tunnel_opt = db::get_tunnel_by_id(&state.db_path, id).unwrap_or(None);
-    let tunnel = match tunnel_opt {
-        Some(t) => t,
-        None => return StatusCode::NOT_FOUND.into_response(),
-    };
+async fn run_ssh_command(
+    node: &db::Node,
+    command: &str,
+) -> Result<String, String> {
+    let key_path = if let Some(pk) = &node.private_key {
+        if pk.trim().is_empty() { None } else {
+            let path = format!("/tmp/cheragh_key_{}_{}", node.id.unwrap_or(0), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros());
+            let _ = tokio::fs::write(&path, pk).await;
+            let mut perms_cmd = tokio::process::Command::new("chmod");
+            perms_cmd.args(["600", &path]);
+            let _ = perms_cmd.output().await;
+            Some(path)
+        }
+    } else { None };
 
-    // Auto-start server on Iran side so the control port is listening when Kharej connects.
-    // Note: start_tunnel_server sets status to "active" internally.
-    let _ = start_tunnel_server(state.clone(), &tunnel, id).await;
-
-    // Set tunnel status to deploying AFTER starting the tunnel server,
-    // overwriting the "active" status that start_tunnel_server just set.
-    // The deploy task will set the final status on completion.
-    let _ = db::update_tunnel_status(&state.db_path, id, "deploying");
-
-    let db_path_spawn = state.db_path.clone();
-
-    // Spawn deployment task using tokio::process::Command (non-blocking!)
-    tokio::spawn(async move {
-        println!("[DEPLOY] Initiating SSH deployment on {}@{}...", payload.username, payload.host);
-        
-
-        
-        let password_str = payload.password.unwrap_or_default();
-        
-        let iran_ip = payload.panel_host.split(':').next().unwrap_or("127.0.0.1").to_string();
-        let script_content = generate_node_script(&tunnel, id, &iran_ip);
-
-        let mut cmd = tokio::process::Command::new("sshpass");
-        cmd.args([
-            "-p", &password_str,
+    let mut ssh_cmd = tokio::process::Command::new(if key_path.is_none() { "sshpass" } else { "ssh" });
+    
+    if let Some(path) = &key_path {
+        ssh_cmd.args([
+            "-i", path,
+            "-o", "StrictHostKeyChecking=no",
+            "-p", &node.port.to_string(),
+            &format!("{}@{}", node.username, node.host),
+            command
+        ]);
+    } else {
+        ssh_cmd.args([
+            "-p", node.password.as_deref().unwrap_or_default(),
             "ssh",
             "-o", "StrictHostKeyChecking=no",
-            "-p", &payload.port.to_string(),
-            &format!("{}@{}", payload.username, payload.host),
-            "cat > /tmp/node.sh && bash /tmp/node.sh && rm -f /tmp/node.sh"
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+            "-p", &node.port.to_string(),
+            &format!("{}@{}", node.username, node.host),
+            command
+        ]);
+    }
 
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[DEPLOY] Failed to spawn sshpass command: {}", e);
-                let _ = db::update_tunnel_status(&db_path_spawn, id, "error");
-                return;
-            }
-        };
+    let output = ssh_cmd.output().await.map_err(|e| e.to_string())?;
+    
+    if let Some(path) = key_path {
+        let _ = tokio::fs::remove_file(path).await;
+    }
 
-        if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
-            let _ = stdin.write_all(script_content.as_bytes()).await;
-            let _ = stdin.flush().await;
-            drop(stdin);
-        }
-
-        match child.wait_with_output().await {
-            Ok(output) => {
-                if output.status.success() {
-                    println!("[DEPLOY] SSH deployment for tunnel {} finished successfully", id);
-                    let _ = db::update_tunnel_status(&db_path_spawn, id, "active");
-                } else {
-                    let err_msg = String::from_utf8_lossy(&output.stderr);
-                    eprintln!("[DEPLOY] SSH deployment for tunnel {} failed: {}", id, err_msg);
-                    let _ = db::update_tunnel_status(&db_path_spawn, id, "error");
-                }
-            }
-            Err(e) => {
-                eprintln!("[DEPLOY] Failed to run sshpass process: {}", e);
-                let _ = db::update_tunnel_status(&db_path_spawn, id, "error");
-            }
-        }
-    });
-
-    (StatusCode::OK, Json("Deployment started in background")).into_response()
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
 }
 
-// Helper to generate Kharej Server Node Installer Script
-fn generate_node_script(tunnel: &db::Tunnel, id: i64, host: &str) -> String {
-    // Add multi-IP list if backup IPs exist
-    let mut ips = host.to_string();
-    if let Some(ref backups) = tunnel.backup_ips {
-        if !backups.trim().is_empty() {
-            ips = format!("{},{}", host, backups);
-        }
-    }
-    
+fn generate_server_script(tunnel: &db::Tunnel) -> String {
+    let port_hop_flag = if tunnel.port_hopping.unwrap_or(0) == 1 { "--port-hopping" } else { "" };
     let decoy = tunnel.decoy_url.clone().unwrap_or_else(|| "google.com".to_string());
+    let api_port = 18000 + tunnel.id.unwrap_or(0) as u16;
 
     format!(
         r#"#!/bin/bash
-# CheraghTunnel Node Installer Script
 set -e
-
-IRAN_IP="{}"
-CONTROL_PORT="{}"
-PUBLIC_PORT="{}"
-LOCAL_PORT="{}"
-TOKEN="{}"
-PROTOCOL="{}"
-TUNNEL_ID="{}"
-DECOY="{}"
-
-echo "=================================================="
-echo "  Installing CheraghTunnel Client Node..."
-echo "  Target Server: $IRAN_IP:$CONTROL_PORT"
-echo "  Forwarding Public Port: $PUBLIC_PORT -> Local: $LOCAL_PORT"
-echo "=================================================="
-
-# Setup working directories
 mkdir -p /etc/cheraghtunnel
-mkdir -p /tmp/cheraghtunnel
-
-# Attempt to download pre-compiled release binary to save time (5 seconds vs 15 minutes)
-echo "Attempting to download pre-compiled CheraghTunnel release binary..."
-DOWNLOAD_SUCCESS=false
-systemctl stop cheragh-node-$TUNNEL_ID 2>/dev/null || true
-if curl -sSfL -o /tmp/cheraghtunnel-new "https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64"; then
-    mv /tmp/cheraghtunnel-new /usr/local/bin/cheraghtunnel-$TUNNEL_ID
-    chmod +x /usr/local/bin/cheraghtunnel-$TUNNEL_ID
-    echo "Successfully downloaded pre-compiled binary! Skipping Rust compilation."
-    DOWNLOAD_SUCCESS=true
-else
-    rm -f /tmp/cheraghtunnel-new
-    echo "Pre-compiled release binary not found or download failed. Falling back to compilation from source..."
+curl -sSfL -o /tmp/cheraghtunnel-new "https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64" || true
+if [ -f "/tmp/cheraghtunnel-new" ]; then
+    mv /tmp/cheraghtunnel-new /usr/local/bin/cheraghtunnel-{id}
+    chmod +x /usr/local/bin/cheraghtunnel-{id}
 fi
 
-if [ "$DOWNLOAD_SUCCESS" = false ]; then
-    # Install dependencies for compilation
-    echo "Installing system package dependencies for compilation..."
-    apt-get update && apt-get install -y build-essential sqlite3 curl git sshpass || true
-
-    # Install Rust toolchain if not present
-    if ! command -v cargo &> /dev/null; then
-        echo "Installing Rust compilation toolchain..."
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        source $HOME/.cargo/env
-    fi
-
-    echo "Cloning and compiling CheraghTunnel from source..."
-    rm -rf /tmp/cheraghtunnel-source
-    git clone https://github.com/iam4lucard/cheraghtunnel.git /tmp/cheraghtunnel-source
-    cd /tmp/cheraghtunnel-source
-    source $HOME/.cargo/env 2>/dev/null || . $HOME/.cargo/env 2>/dev/null || true
-    cargo build --release
-    mv target/release/cheraghtunnel /usr/local/bin/cheraghtunnel-$TUNNEL_ID
-    chmod +x /usr/local/bin/cheraghtunnel-$TUNNEL_ID
-    cd - > /dev/null
-    rm -rf /tmp/cheraghtunnel-source
-else
-    # Install lightweight runtime dependencies only
-    echo "Installing runtime dependencies..."
-    apt-get update && apt-get install -y sqlite3 curl sshpass || true
-fi
-
-# Setup systemd daemon
-cat <<EOF > /etc/systemd/system/cheragh-node-$TUNNEL_ID.service
+cat << 'EOF' > /etc/systemd/system/cheragh-server-{id}.service
 [Unit]
-Description=CheraghTunnel Client Node - $PROTOCOL ($TUNNEL_ID)
+Description=CheraghTunnel Server {id}
 After=network.target
 
 [Service]
-Type=simple
-ExecStart=/usr/local/bin/cheraghtunnel-$TUNNEL_ID client -s $IRAN_IP -c $CONTROL_PORT -p $PUBLIC_PORT -l 127.0.0.1:$LOCAL_PORT -t $TOKEN --protocol $PROTOCOL --tunnel-id $TUNNEL_ID --decoy "$DECOY"
+ExecStart=/usr/local/bin/cheraghtunnel-{id} server -c {control_port} -p {public_port} -t '{token}' --protocol {protocol} --decoy '{decoy}' {port_hop_flag} --api-port {api_port}
 Restart=always
 User=root
 
@@ -756,15 +569,194 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable cheragh-node-$TUNNEL_ID
-systemctl start cheragh-node-$TUNNEL_ID
-echo "Setup completed successfully!"
+systemctl enable cheragh-server-{id}
+systemctl restart cheragh-server-{id}
 "#,
-        ips, tunnel.control_port, tunnel.iran_port, tunnel.kharej_port, tunnel.token, tunnel.protocol, id, decoy
+        id = tunnel.id.unwrap_or(0),
+        control_port = tunnel.control_port,
+        public_port = tunnel.iran_port,
+        token = tunnel.token,
+        protocol = tunnel.protocol,
+        decoy = decoy,
+        port_hop_flag = port_hop_flag,
+        api_port = api_port,
     )
 }
 
-// Generate Kharej Server Node Installer Script Handler
+fn generate_client_script(tunnel: &db::Tunnel, iran_ip: &str) -> String {
+    let decoy = tunnel.decoy_url.clone().unwrap_or_else(|| "google.com".to_string());
+    
+    format!(
+        r#"#!/bin/bash
+set -e
+mkdir -p /etc/cheraghtunnel
+curl -sSfL -o /tmp/cheraghtunnel-new "https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64" || true
+if [ -f "/tmp/cheraghtunnel-new" ]; then
+    mv /tmp/cheraghtunnel-new /usr/local/bin/cheraghtunnel-{id}
+    chmod +x /usr/local/bin/cheraghtunnel-{id}
+fi
+
+cat << 'EOF' > /etc/systemd/system/cheragh-node-{id}.service
+[Unit]
+Description=CheraghTunnel Client Node {id}
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/cheraghtunnel-{id} client -s {iran_ip} -c {control_port} -p {public_port} -l 127.0.0.1:{kharej_port} -t '{token}' --protocol {protocol} --tunnel-id {id} --decoy '{decoy}'
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable cheragh-node-{id}
+systemctl restart cheragh-node-{id}
+"#,
+        id = tunnel.id.unwrap_or(0),
+        iran_ip = iran_ip,
+        control_port = tunnel.control_port,
+        public_port = tunnel.iran_port,
+        kharej_port = tunnel.kharej_port,
+        token = tunnel.token,
+        protocol = tunnel.protocol,
+        decoy = decoy,
+    )
+}
+
+async fn deploy_tunnel_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    Json(payload): Json<DeployRequest>,
+) -> impl IntoResponse {
+    let tunnel_opt = db::get_tunnel_by_id(&state.db_path, id).unwrap_or(None);
+    let mut tunnel = match tunnel_opt {
+        Some(t) => t,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    // Get Iran Node
+    let iran_node = if let Some(n_id) = payload.iran_node_id {
+        match db::get_node_by_id(&state.db_path, n_id).unwrap_or(None) {
+            Some(n) => n,
+            None => return StatusCode::BAD_REQUEST.into_response(),
+        }
+    } else {
+        return (StatusCode::BAD_REQUEST, Json("iran_node_id required")).into_response();
+    };
+
+    // Get Kharej Node
+    let kharej_node = if let Some(n_id) = payload.kharej_node_id {
+        match db::get_node_by_id(&state.db_path, n_id).unwrap_or(None) {
+            Some(n) => n,
+            None => return StatusCode::BAD_REQUEST.into_response(),
+        }
+    } else {
+        let h = payload.host.clone().unwrap_or_default();
+        let p = payload.port.unwrap_or(22);
+        let u = payload.username.clone().unwrap_or_else(|| "root".to_string());
+        let pwd = payload.password.clone();
+        let pk = payload.private_key.clone();
+        
+        let mut node = db::Node {
+            id: None,
+            name: payload.node_name.clone().unwrap_or_else(|| h.clone()),
+            host: h,
+            port: p,
+            username: u,
+            password: pwd,
+            private_key: pk,
+            role: payload.role.unwrap_or_else(|| "kharej".to_string()),
+        };
+        
+        if payload.save_node.unwrap_or(false) {
+            if let Ok(new_id) = db::create_node(&state.db_path, &node) {
+                node.id = Some(new_id);
+            }
+        }
+        node
+    };
+
+    // Update tunnel nodes
+    tunnel.iran_node_id = iran_node.id;
+    tunnel.kharej_node_id = kharej_node.id;
+    let _ = db::update_tunnel(&state.db_path, id, &tunnel);
+
+    let _ = db::update_tunnel_status(&state.db_path, id, "deploying");
+    let db_path_spawn = state.db_path.clone();
+
+    tokio::spawn(async move {
+        // Deploy Iran Server
+        let server_script = generate_server_script(&tunnel);
+        let cmd = format!("cat > /tmp/server.sh << 'EOF_SCRIPT'
+{}
+EOF_SCRIPT
+bash /tmp/server.sh && rm -f /tmp/server.sh", server_script);
+        if let Err(e) = run_ssh_command(&iran_node, &cmd).await {
+            eprintln!("[DEPLOY] Iran Node SSH failed: {}", e);
+            let _ = db::update_tunnel_status(&db_path_spawn, id, "error");
+            return;
+        }
+
+        // Deploy Kharej Client
+        let client_script = generate_client_script(&tunnel, &iran_node.host);
+        let cmd = format!("cat > /tmp/client.sh << 'EOF_SCRIPT'
+{}
+EOF_SCRIPT
+bash /tmp/client.sh && rm -f /tmp/client.sh", client_script);
+        if let Err(e) = run_ssh_command(&kharej_node, &cmd).await {
+            eprintln!("[DEPLOY] Kharej Node SSH failed: {}", e);
+            let _ = db::update_tunnel_status(&db_path_spawn, id, "error");
+            return;
+        }
+
+        let _ = db::update_tunnel_status(&db_path_spawn, id, "active");
+    });
+
+    (StatusCode::OK, Json("Deployment initiated")).into_response()
+}
+
+// ------------------------------------------------------------------
+// Nodes CRUD Handlers
+// ------------------------------------------------------------------
+
+async fn get_nodes_handler(Extension(state): Extension<Arc<AppState>>) -> impl IntoResponse {
+    match db::get_nodes(&state.db_path) {
+        Ok(nodes) => (StatusCode::OK, Json(nodes)).into_response(),
+        Err(e) => {
+            eprintln!("[API] Error fetching nodes: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn create_node_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(payload): Json<db::Node>,
+) -> impl IntoResponse {
+    match db::create_node(&state.db_path, &payload) {
+        Ok(id) => (StatusCode::OK, Json(id)).into_response(),
+        Err(e) => {
+            eprintln!("[API] Error creating node: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn delete_node_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> impl IntoResponse {
+    match db::delete_node(&state.db_path, id) {
+        Ok(_) => StatusCode::OK.into_response(),
+        Err(e) => {
+            eprintln!("[API] Error deleting node: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 async fn node_script_handler(
     Extension(state): Extension<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
@@ -785,7 +777,7 @@ async fn node_script_handler(
         .next()
         .unwrap_or("127.0.0.1");
 
-    let script = generate_node_script(&tunnel, id, host);
+    let script = generate_client_script(&tunnel, host);
 
     (
         StatusCode::OK,

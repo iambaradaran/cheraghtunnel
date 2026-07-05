@@ -132,20 +132,99 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('deploy-modal').style.display = 'none';
     });
 
+    // Node Deploy Custom Fields Toggle
+    document.getElementById('deploy-kharej-select');
+    const deployIranSelect = document.getElementById('deploy-iran-select');
+    
+    document.getElementById('open-add-node-modal').addEventListener('click', () => {
+        document.getElementById('add-node-modal').style.display = 'flex';
+    });
+    document.getElementById('close-add-node-modal').addEventListener('click', () => {
+        document.getElementById('add-node-modal').style.display = 'none';
+    });
+    
+    document.getElementById('add-node-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const payload = {
+            name: document.getElementById('add-node-name').value,
+            role: document.getElementById('add-node-role').value,
+            host: document.getElementById('add-node-host').value,
+            port: parseInt(document.getElementById('add-node-port').value),
+            username: document.getElementById('add-node-user').value,
+            password: document.getElementById('add-node-pass').value || null,
+            private_key: document.getElementById('add-node-key').value || null
+        };
+        try {
+            const res = await apiFetch('/api/nodes', { method: 'POST', body: JSON.stringify(payload) });
+            if (res && res.ok) {
+                document.getElementById('add-node-modal').style.display = 'none';
+                document.getElementById('add-node-form').reset();
+                loadNodes();
+            } else {
+                alert("Failed to add node.");
+            }
+        } catch(err) { console.error(err); }
+    });
+    
+    const deployCustomFields = document.getElementById('deploy-custom-fields');
+    deployKharejSelect.addEventListener('change', () => {
+        if (deployKharejSelect.value === 'custom') {
+            deployCustomFields.style.display = 'block';
+        } else {
+            deployCustomFields.style.display = 'none';
+        }
+    });
+
+    const saveNodeCheckbox = document.getElementById('save-node-checkbox');
+    const saveNodeNameGroup = document.getElementById('save-node-name-group');
+    saveNodeCheckbox.addEventListener('change', () => {
+        if (saveNodeCheckbox.checked) {
+            saveNodeNameGroup.style.display = 'block';
+        } else {
+            saveNodeNameGroup.style.display = 'none';
+        }
+    });
+
+    // Nodes Modal
+    document.getElementById('manage-nodes-btn').addEventListener('click', () => {
+        loadNodes();
+        document.getElementById('nodes-modal').style.display = 'flex';
+    });
+    
+    document.getElementById('close-nodes-modal').addEventListener('click', () => {
+        document.getElementById('nodes-modal').style.display = 'none';
+    });
+
     // SSH Deploy Form Submit
     const deployForm = document.getElementById('deploy-tunnel-form');
     deployForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         const id = document.getElementById('deploy-tunnel-id').value;
+        const iranIdVal = document.getElementById('deploy-iran-select').value;
+        const kharejIdVal = document.getElementById('deploy-kharej-select').value;
+        
+        if (!iranIdVal) {
+            alert("Iran Node is required!");
+            return;
+        }
+
         const payload = {
-            host: document.getElementById('ssh-host').value,
-            port: parseInt(document.getElementById('ssh-port').value),
-            username: document.getElementById('ssh-user').value,
-            password: document.getElementById('ssh-password').value || null,
-            panel_host: window.location.host
+            iran_node_id: parseInt(iranIdVal)
         };
 
-        // Hide modal and show notification
+        if (kharejIdVal !== 'custom') {
+            payload.kharej_node_id = parseInt(kharejIdVal);
+        } else {
+            payload.host = document.getElementById('ssh-host').value;
+            payload.port = parseInt(document.getElementById('ssh-port').value);
+            payload.username = document.getElementById('ssh-user').value;
+            payload.password = document.getElementById('ssh-password').value || null;
+            payload.private_key = document.getElementById('ssh-key').value || null;
+            payload.save_node = document.getElementById('save-node-checkbox').checked;
+            payload.node_name = document.getElementById('save-node-name').value || null;
+            payload.role = "kharej";
+        }
+
         document.getElementById('deploy-modal').style.display = 'none';
         alert("SSH Auto-Deployment task initiated in background. Check tunnel status shortly!");
 
@@ -154,6 +233,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 method: 'POST',
                 body: JSON.stringify(payload)
             });
+            if (res && res.ok) {
+                setTimeout(loadTunnels, 1500);
+            } else {
+                const errText = await res.text();
+                alert("Failed to start deploy: " + errText);
+            }
+        } catch (err) {
+            console.error(err);
+        }
+    });
             if (res && res.ok) {
                 loadTunnels();
             }
@@ -170,6 +259,7 @@ function showDashboard() {
     // Load initial data
     loadTunnels();
     loadStats();
+    loadNodes();
 
     // Start polling stats and tunnels
     setInterval(loadStats, 3000);
@@ -249,6 +339,52 @@ async function loadTunnels() {
     }
 }
 
+async function loadNodes() {
+    try {
+        const res = await apiFetch('/api/nodes');
+        if (res && res.ok) {
+            const nodes = await res.json();
+            const tbody = document.getElementById('nodes-body');
+            tbody.innerHTML = '';
+            
+            const iranSelect = document.getElementById('deploy-iran-select');
+            const kharejSelect = document.getElementById('deploy-kharej-select');
+            
+            iranSelect.innerHTML = '<option value="" disabled selected>-- Select an Iran Node --</option>';
+            kharejSelect.innerHTML = '<option value="custom">-- Custom Node (Enter details below) --</option>';
+
+            nodes.forEach(n => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${n.name}</td>
+                    <td>${n.host}</td>
+                    <td>${n.port}</td>
+                    <td>${n.username}</td>
+                    <td>
+                        <button class="btn btn-secondary btn-small" onclick="deleteNode(${n.id})">Delete</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+
+                if (n.role === 'iran' || n.role === 'both') {
+                    const opt = document.createElement('option');
+                    opt.value = n.id;
+                    opt.innerText = `${n.name} (${n.host})`;
+                    iranSelect.appendChild(opt);
+                }
+                if (n.role === 'kharej' || n.role === 'both') {
+                    const opt = document.createElement('option');
+                    opt.value = n.id;
+                    opt.innerText = `${n.name} (${n.host})`;
+                    kharejSelect.appendChild(opt);
+                }
+            });
+        }
+    } catch (err) {
+        console.error(err);
+    }
+}
+
 async function loadStats() {
     try {
         const res = await apiFetch('/api/stats');
@@ -291,6 +427,18 @@ async function deleteTunnel(id) {
         const res = await apiFetch(`/api/tunnels/${id}`, { method: 'DELETE' });
         if (res && res.ok) {
             loadTunnels();
+        }
+    } catch (err) {
+        console.error(err);
+    }
+}
+
+async function deleteNode(id) {
+    if (!confirm("Are you sure you want to delete this saved node?")) return;
+    try {
+        const res = await apiFetch(`/api/nodes/${id}`, { method: 'DELETE' });
+        if (res && res.ok) {
+            loadNodes();
         }
     } catch (err) {
         console.error(err);
@@ -378,6 +526,7 @@ async function apiFetch(url, options = {}) {
 
 window.toggleTunnel = toggleTunnel;
 window.deleteTunnel = deleteTunnel;
+window.deleteNode = deleteNode;
 window.showNodeCommand = showNodeCommand;
 window.showEditModal = showEditModal;
 window.showDeployModal = showDeployModal;
