@@ -150,7 +150,6 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
         .route("/api/tunnels", get(get_tunnels_handler).post(create_tunnel_handler))
         .route("/api/tunnels/:id", get(get_tunnel_handler).put(update_tunnel_handler).delete(delete_tunnel_handler))
         .route("/api/tunnels/:id/toggle", post(toggle_tunnel_handler))
-        .route("/api/tunnels/:id/deploy", post(deploy_tunnel_handler))
         .route("/api/tunnels/:id/telemetry", get(telemetry_handler))
         .route("/api/stats", get(stats_handler))
         .route("/api/nodes", get(get_nodes_handler).post(create_node_handler))
@@ -459,38 +458,52 @@ async fn toggle_tunnel_handler(
         });
         StatusCode::OK.into_response()
     } else {
-        let _ = db::update_tunnel_status(&state.db_path, id, "active");
-        
-        let state_clone = state.clone();
+        // Find saved Iran and Kharej nodes
+        let iran_node_id = match tunnel.iran_node_id {
+            Some(id) => id,
+            None => return (StatusCode::BAD_REQUEST, "Iran Node is not selected for this tunnel").into_response(),
+        };
+        let kharej_node_id = match tunnel.kharej_node_id {
+            Some(id) => id,
+            None => return (StatusCode::BAD_REQUEST, "Kharej Node is not selected for this tunnel").into_response(),
+        };
+
+        let iran_node = match db::get_node_by_id(&state.db_path, iran_node_id).unwrap_or(None) {
+            Some(n) => n,
+            None => return (StatusCode::BAD_REQUEST, "Selected Iran Node not found").into_response(),
+        };
+        let kharej_node = match db::get_node_by_id(&state.db_path, kharej_node_id).unwrap_or(None) {
+            Some(n) => n,
+            None => return (StatusCode::BAD_REQUEST, "Selected Kharej Node not found").into_response(),
+        };
+
+        let _ = db::update_tunnel_status(&state.db_path, id, "deploying");
+        let db_path_spawn = state.db_path.clone();
+
         tokio::spawn(async move {
-            if let Some(i_id) = tunnel.iran_node_id {
-                if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
-                    let _ = run_ssh_command(&n, &format!("systemctl start cheragh-server-{}", tunnel.id.unwrap())).await;
-                }
+            // Deploy Iran Server
+            let server_script = generate_server_script(&tunnel);
+            let cmd = format!("cat > /tmp/server.sh << 'EOF_SCRIPT'\n{}\nEOF_SCRIPT\nbash /tmp/server.sh && rm -f /tmp/server.sh", server_script);
+            if let Err(e) = run_ssh_command(&iran_node, &cmd).await {
+                eprintln!("[DEPLOY] Iran Node SSH failed: {}", e);
+                let _ = db::update_tunnel_status(&db_path_spawn, id, "error");
+                return;
             }
-            if let Some(k_id) = tunnel.kharej_node_id {
-                if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, k_id) {
-                    let _ = run_ssh_command(&n, &format!("systemctl start cheragh-node-{}", tunnel.id.unwrap())).await;
-                }
+
+            // Deploy Kharej Client
+            let client_script = generate_client_script(&tunnel, &iran_node.host);
+            let cmd = format!("cat > /tmp/client.sh << 'EOF_SCRIPT'\n{}\nEOF_SCRIPT\nbash /tmp/client.sh && rm -f /tmp/client.sh", client_script);
+            if let Err(e) = run_ssh_command(&kharej_node, &cmd).await {
+                eprintln!("[DEPLOY] Kharej Node SSH failed: {}", e);
+                let _ = db::update_tunnel_status(&db_path_spawn, id, "error");
+                return;
             }
+
+            let _ = db::update_tunnel_status(&db_path_spawn, id, "active");
         });
+
         StatusCode::OK.into_response()
     }
-}
-
-// SSH Node Deployer Handler
-#[derive(Deserialize)]
-struct DeployRequest {
-    iran_node_id: Option<i64>,
-    kharej_node_id: Option<i64>,
-    save_node: Option<bool>,
-    node_name: Option<String>,
-    host: Option<String>,
-    port: Option<u16>,
-    username: Option<String>,
-    password: Option<String>,
-    private_key: Option<String>,
-    role: Option<String>,
 }
 
 async fn run_ssh_command(
@@ -628,112 +641,7 @@ systemctl restart cheragh-node-{id}
     )
 }
 
-async fn deploy_tunnel_handler(
-    Extension(state): Extension<Arc<AppState>>,
-    axum::extract::Path(id): axum::extract::Path<i64>,
-    payload_opt: Option<axum::Json<DeployRequest>>,
-) -> impl IntoResponse {
-    let payload = payload_opt.map(|axum::Json(p)| p).unwrap_or_else(|| DeployRequest {
-        iran_node_id: None,
-        kharej_node_id: None,
-        save_node: None,
-        node_name: None,
-        host: None,
-        port: None,
-        username: None,
-        password: None,
-        private_key: None,
-        role: None,
-    });
-    let tunnel_opt = db::get_tunnel_by_id(&state.db_path, id).unwrap_or(None);
-    let mut tunnel = match tunnel_opt {
-        Some(t) => t,
-        None => return StatusCode::NOT_FOUND.into_response(),
-    };
 
-    // Get Iran Node
-    let iran_node = if let Some(n_id) = payload.iran_node_id {
-        match db::get_node_by_id(&state.db_path, n_id).unwrap_or(None) {
-            Some(n) => n,
-            None => return StatusCode::BAD_REQUEST.into_response(),
-        }
-    } else {
-        return (StatusCode::BAD_REQUEST, axum::Json("iran_node_id required")).into_response();
-    };
-
-    // Get Kharej Node
-    let kharej_node_id = payload.kharej_node_id.or(tunnel.kharej_node_id);
-    let kharej_node = if let Some(n_id) = kharej_node_id {
-        match db::get_node_by_id(&state.db_path, n_id).unwrap_or(None) {
-            Some(n) => n,
-            None => return StatusCode::BAD_REQUEST.into_response(),
-        }
-    } else if payload.host.is_some() {
-        let h = payload.host.clone().unwrap_or_default();
-        let p = payload.port.unwrap_or(22);
-        let u = payload.username.clone().unwrap_or_else(|| "root".to_string());
-        let pwd = payload.password.clone();
-        let pk = payload.private_key.clone();
-        
-        let mut node = db::Node {
-            id: None,
-            name: payload.node_name.clone().unwrap_or_else(|| h.clone()),
-            host: h,
-            port: p,
-            username: u,
-            password: pwd,
-            private_key: pk,
-            role: payload.role.unwrap_or_else(|| "kharej".to_string()),
-        };
-        
-        if payload.save_node.unwrap_or(false) {
-            if let Ok(new_id) = db::create_node(&state.db_path, &node) {
-                node.id = Some(new_id);
-            }
-        }
-        node
-    } else {
-        return (StatusCode::BAD_REQUEST, axum::Json("kharej_node_id or custom host details required")).into_response();
-    };
-
-    // Update tunnel nodes
-    tunnel.iran_node_id = iran_node.id;
-    tunnel.kharej_node_id = kharej_node.id;
-    let _ = db::update_tunnel(&state.db_path, id, &tunnel);
-
-    let _ = db::update_tunnel_status(&state.db_path, id, "deploying");
-    let db_path_spawn = state.db_path.clone();
-
-    tokio::spawn(async move {
-        // Deploy Iran Server
-        let server_script = generate_server_script(&tunnel);
-        let cmd = format!("cat > /tmp/server.sh << 'EOF_SCRIPT'
-{}
-EOF_SCRIPT
-bash /tmp/server.sh && rm -f /tmp/server.sh", server_script);
-        if let Err(e) = run_ssh_command(&iran_node, &cmd).await {
-            eprintln!("[DEPLOY] Iran Node SSH failed: {}", e);
-            let _ = db::update_tunnel_status(&db_path_spawn, id, "error");
-            return;
-        }
-
-        // Deploy Kharej Client
-        let client_script = generate_client_script(&tunnel, &iran_node.host);
-        let cmd = format!("cat > /tmp/client.sh << 'EOF_SCRIPT'
-{}
-EOF_SCRIPT
-bash /tmp/client.sh && rm -f /tmp/client.sh", client_script);
-        if let Err(e) = run_ssh_command(&kharej_node, &cmd).await {
-            eprintln!("[DEPLOY] Kharej Node SSH failed: {}", e);
-            let _ = db::update_tunnel_status(&db_path_spawn, id, "error");
-            return;
-        }
-
-        let _ = db::update_tunnel_status(&db_path_spawn, id, "active");
-    });
-
-    (StatusCode::OK, Json("Deployment initiated")).into_response()
-}
 
 // ------------------------------------------------------------------
 // Nodes CRUD Handlers

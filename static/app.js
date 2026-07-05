@@ -392,8 +392,6 @@ async function loadTunnels() {
                         <button class="btn btn-secondary" onclick="toggleTunnel(${t.id})">
                             ${t.status === 'active' ? 'Stop' : 'Start'}
                         </button>
-                        <button class="btn btn-secondary" onclick="triggerDeploy(${t.id})">SSH Deploy</button>
-                        <button class="btn btn-secondary" onclick="showNodeCommand(${t.id})">Node Cmd</button>
                         <button class="btn btn-secondary" style="background: rgba(168, 85, 247, 0.15); color: #a855f7;" onclick="showTelemetry(${t.id}, '${t.name}')">Telemetry</button>
                         <button class="btn btn-secondary" style="background: rgba(0, 240, 255, 0.15); color: var(--color-cyan);" onclick="showEditModal(${t.id})">Edit</button>
                         <button class="btn btn-secondary btn-danger" style="background: rgba(255,51,102,0.15); color: #ff3366;" onclick="deleteTunnel(${t.id})">Delete</button>
@@ -523,79 +521,6 @@ async function deleteNode(id) {
         console.error(err);
     }
 }
-
-function showNodeCommand(id) {
-    const host = window.location.host;
-    const cmd = `curl -sSf http://${host}/api/tunnels/${id}/node-script | bash`;
-    
-    document.getElementById('node-command-text').innerText = cmd;
-    
-    const copyBtn = document.getElementById('copy-cmd-btn');
-    copyBtn.innerText = 'Copy Command';
-    copyBtn.onclick = () => {
-        navigator.clipboard.writeText(cmd);
-        copyBtn.innerText = 'Copied!';
-    };
-    
-    document.getElementById('cmd-modal').style.display = 'flex';
-}
-
-async function showEditModal(id) {
-    try {
-        const res = await apiFetch(`/api/tunnels/${id}`);
-        if (!res || !res.ok) return;
-        const t = await res.json();
-        
-        document.getElementById('edit-tunnel-id').value = t.id;
-        document.getElementById('edit-tunnel-iran-select').value = t.iran_node_id || '';
-        document.getElementById('edit-tunnel-kharej-select').value = t.kharej_node_id || '';
-        document.getElementById('edit-tunnel-name').value = t.name;
-        document.getElementById('edit-tunnel-protocol').value = t.protocol;
-        document.getElementById('edit-iran-port').value = t.iran_port;
-        document.getElementById('edit-control-port').value = t.control_port;
-        document.getElementById('edit-kharej-port').value = t.kharej_port;
-        document.getElementById('edit-backup-ips').value = t.backup_ips || '';
-        
-        let initialOpts = null;
-        if (t.transport_options) {
-            try { initialOpts = JSON.parse(t.transport_options); } catch (e) {}
-        }
-        renderDynamicOptions(t.protocol, 'edit-dynamic-options-container', initialOpts);
-        document.getElementById('edit-tunnel-token').value = t.token;
-        document.getElementById('edit-decoy-url').value = t.decoy_url || '';
-        document.getElementById('edit-tunnel-hopping').checked = t.port_hopping === 1;
-        document.getElementById('edit-quota-limit').value = t.quota_limit_bytes ? (t.quota_limit_bytes / (1024 * 1024 * 1024)).toFixed(1) : 0;
-        document.getElementById('edit-speed-limit').value = t.speed_limit_kbps || 0;
-        if (window.toggleDecoyVisibility) {
-            window.toggleDecoyVisibility(t.protocol, 'edit-decoy-group');
-        }
-        
-        document.getElementById('edit-modal').style.display = 'flex';
-    } catch (err) {
-        console.error(err);
-    }
-}
-
-async function triggerDeploy(id) {
-    if (!confirm("Are you sure you want to deploy this tunnel to the configured nodes?")) return;
-    
-    alert("SSH Auto-Deployment task initiated in background. Check tunnel status shortly!");
-    try {
-        const res = await apiFetch(`/api/tunnels/${id}/deploy`, {
-            method: 'POST',
-            body: JSON.stringify({})
-        });
-        if (res && res.ok) {
-            setTimeout(loadTunnels, 1500);
-        } else {
-            const errText = await res.text();
-            alert("Failed to start deploy: " + errText);
-        }
-    } catch (err) {
-        console.error(err);
-    }
-}
-window.triggerDeploy = triggerDeploy;
 
 // Helper to get auth headers for API calls
 function authHeaders() {
