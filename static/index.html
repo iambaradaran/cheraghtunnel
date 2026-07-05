@@ -40,6 +40,7 @@
             <div class="user-profile">
                 <span>Admin</span>
                 <button id="manage-nodes-btn" class="btn btn-primary" style="margin-right: 10px;">Manage Nodes</button>
+                <button id="open-backup-modal-btn" class="btn btn-primary" style="margin-right: 10px;">Backup / Restore</button>
                 <button id="logout-btn" class="btn btn-secondary">Logout</button>
             </div>
         </header>
@@ -435,6 +436,34 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Backup / Restore Modal -->
+    <div id="backup-modal" class="modal-overlay" style="display: none;">
+        <div class="glass-card modal-card" style="max-width: 500px;">
+            <h3>Backup & Restore</h3>
+            <p>Safely download or upload your panel's database.</p>
+            
+            <div style="margin-top: 20px; padding: 20px; background: rgba(0,0,0,0.2); border-radius: 8px;">
+                <h4>Download Backup</h4>
+                <p style="font-size: 0.9em; color: #ccc;">Download a complete `.sqlite` snapshot of your current settings, nodes, and tunnels.</p>
+                <button type="button" id="download-backup-btn" class="btn btn-primary" style="margin-top: 10px; width: 100%;">Download Now</button>
+            </div>
+
+            <div style="margin-top: 20px; padding: 20px; background: rgba(0,0,0,0.2); border-radius: 8px;">
+                <h4>Restore Backup</h4>
+                <p style="font-size: 0.9em; color: #ccc;">Upload a previously downloaded backup file to instantly restore your panel state.</p>
+                <form id="restore-form" style="margin-top: 10px;">
+                    <input type="file" id="restore-file" accept=".sqlite,.db" required style="margin-bottom: 15px; display: block; width: 100%; color: white;">
+                    <button type="submit" id="restore-submit-btn" class="btn btn-secondary" style="width: 100%;">Upload and Restore</button>
+                </form>
+            </div>
+
+            <div class="modal-actions" style="margin-top: 20px;">
+                <button type="button" id="close-backup-modal" class="btn btn-primary">Close</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/app.js"></script>
 </body>
 </html>

@@ -4,7 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
     http::{StatusCode, HeaderMap, header},
     middleware::{self, Next},
-    extract::Request,
+    extract::{Request, Multipart},
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -155,6 +155,8 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
         .route("/api/stats", get(stats_handler))
         .route("/api/nodes", get(get_nodes_handler).post(create_node_handler))
         .route("/api/nodes/:id", axum::routing::delete(delete_node_handler))
+        .route("/api/backup", get(backup_handler))
+        .route("/api/restore", post(restore_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     let app = public_routes
@@ -820,4 +822,60 @@ async fn stats_handler(Extension(state): Extension<Arc<AppState>>) -> impl IntoR
         active_tunnels,
         total_tunnels,
     })
+}
+
+// ------------------------------------------------------------------
+// Backup & Restore Handlers
+// ------------------------------------------------------------------
+
+async fn backup_handler(
+    Extension(state): Extension<Arc<AppState>>,
+) -> impl IntoResponse {
+    match tokio::fs::read(&state.db_path).await {
+        Ok(data) => {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .header(header::CONTENT_DISPOSITION, "attachment; filename=\"cheragh_backup.sqlite\"")
+                .body(axum::body::Body::from(data))
+                .unwrap()
+        }
+        Err(e) => {
+            eprintln!("[API] Failed to read database for backup: {}", e);
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(axum::body::Body::from("Failed to generate backup"))
+                .unwrap()
+        }
+    }
+}
+
+async fn restore_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    if let Some(field) = multipart.next_field().await.unwrap_or(None) {
+        let data = match field.bytes().await {
+            Ok(d) => d,
+            Err(e) => return (StatusCode::BAD_REQUEST, format!("Failed to read upload: {}", e)).into_response(),
+        };
+
+        let tmp_path = std::env::temp_dir().join("cheragh_restore_tmp.sqlite");
+        if let Err(e) = tokio::fs::write(&tmp_path, &data).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to save temp file: {}", e)).into_response();
+        }
+
+        if let Err(e) = rusqlite::Connection::open(&tmp_path) {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return (StatusCode::BAD_REQUEST, format!("Invalid SQLite file: {}", e)).into_response();
+        }
+
+        if let Err(e) = tokio::fs::rename(&tmp_path, &state.db_path).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to restore database: {}", e)).into_response();
+        }
+
+        return StatusCode::OK.into_response();
+    }
+    
+    (StatusCode::BAD_REQUEST, "No file uploaded".to_string()).into_response()
 }

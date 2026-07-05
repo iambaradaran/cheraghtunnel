@@ -165,6 +165,77 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch(err) { console.error(err); }
     });
+    // Backup & Restore Logic
+    document.getElementById('open-backup-modal-btn').addEventListener('click', () => {
+        document.getElementById('backup-modal').style.display = 'flex';
+    });
+    
+    document.getElementById('close-backup-modal').addEventListener('click', () => {
+        document.getElementById('backup-modal').style.display = 'none';
+    });
+
+    document.getElementById('download-backup-btn').addEventListener('click', async () => {
+        const token = localStorage.getItem('token');
+        try {
+            const res = await fetch('/api/backup', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = 'cheragh_backup.sqlite';
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+            } else {
+                alert("Failed to download backup.");
+            }
+        } catch (err) {
+            console.error(err);
+        }
+    });
+
+    document.getElementById('restore-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fileInput = document.getElementById('restore-file');
+        if (!fileInput.files.length) return;
+        
+        const file = fileInput.files[0];
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const btn = document.getElementById('restore-submit-btn');
+        btn.innerText = "Restoring...";
+        btn.disabled = true;
+
+        const token = localStorage.getItem('token');
+        try {
+            const res = await fetch('/api/restore', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` },
+                body: formData
+            });
+            
+            if (res.ok) {
+                alert("Database restored successfully! Reloading panel...");
+                window.location.reload();
+            } else {
+                const errText = await res.text();
+                alert("Restore failed: " + errText);
+                btn.innerText = "Upload and Restore";
+                btn.disabled = false;
+            }
+        } catch (err) {
+            console.error(err);
+            alert("An error occurred during restore.");
+            btn.innerText = "Upload and Restore";
+            btn.disabled = false;
+        }
+    });
+
     
     const deployCustomFields = document.getElementById('deploy-custom-fields');
     deployKharejSelect.addEventListener('change', () => {
