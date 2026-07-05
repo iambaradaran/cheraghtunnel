@@ -200,45 +200,6 @@
             </form>
         </div>
     </div>
-
-    
-    </div>
-
-    
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="ssh-user">SSH Username</label>
-                            <input type="text" id="ssh-user" value="root">
-                        </div>
-                        <div class="form-group">
-                            <label for="ssh-password">SSH Password (Optional if Key)</label>
-                            <input type="password" id="ssh-password" placeholder="••••••••">
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label for="ssh-key">SSH Private Key (Optional)</label>
-                        <textarea id="ssh-key" placeholder="-----BEGIN RSA PRIVATE KEY-----..." rows="3" style="width: 100%; padding: 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.2); color: white; resize: vertical; font-family: monospace;"></textarea>
-                    </div>
-                    
-                    <div class="form-row" style="align-items: center; margin-bottom: 15px; margin-top: 10px;">
-                        <input type="checkbox" id="save-node-checkbox" style="width: auto; margin-right: 10px;">
-                        <label for="save-node-checkbox" style="margin: 0;">Save this node for future use</label>
-                    </div>
-                    <div class="form-group" id="save-node-name-group" style="display: none;">
-                        <label for="save-node-name">Node Name</label>
-                        <input type="text" id="save-node-name" placeholder="e.g. Frankfurt Server 1">
-                    </div>
-                </div>
-                
-                <div class="modal-actions">
-                    <button type="button" id="close-deploy-modal" class="btn btn-secondary">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Deploy Nodes</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-
     <!-- Edit Tunnel Modal -->
     <div id="edit-modal" class="modal-overlay" style="display: none;">
         <div class="glass-card modal-card">
@@ -439,6 +400,6 @@
         </div>
     </div>
 
-    <script src="/app.js?v=1.12.2"></script>
+    <script src="/app.js?v=1.12.3"></script>
 </body>
 </html>
