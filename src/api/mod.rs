@@ -208,6 +208,7 @@ async fn static_handler(uri: axum::http::Uri) -> impl IntoResponse {
             let mime = mime_guess::from_path(&path).first_or_octet_stream();
             Response::builder()
                 .header(header::CONTENT_TYPE, mime.as_ref())
+                .header(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate, max-age=0")
                 .body(axum::body::Body::from(content.data))
                 .unwrap()
         }

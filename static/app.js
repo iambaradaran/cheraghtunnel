@@ -1,3 +1,4 @@
+const DECOY_PROTOCOLS = ['aura', 'nova', 'glimmer', 'beacon', 'mirage'];
 document.addEventListener('DOMContentLoaded', () => {
     // Session Auth State check
     const token = localStorage.getItem('cheragh_session');
@@ -58,7 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Show/Hide dynamic options based on protocol
-    const DECOY_PROTOCOLS = ['aura', 'nova', 'glimmer', 'beacon', 'mirage'];
+
     
     function toggleDecoyVisibility(protocol, groupId) {
         const group = document.getElementById(groupId);

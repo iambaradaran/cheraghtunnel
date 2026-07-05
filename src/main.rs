@@ -8,6 +8,7 @@ mod common;
 
 #[derive(Parser)]
 #[command(name = "cheraghtunnel")]
+#[command(version)]
 #[command(about = "CheraghTunnel: High-performance reverse tunneling manager in Rust", long_about = None)]
 struct Cli {
     #[command(subcommand)]
