@@ -88,6 +88,8 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         const payload = {
             name: document.getElementById('tunnel-name').value,
+            iran_node_id: parseInt(document.getElementById('tunnel-iran-select').value) || null,
+            kharej_node_id: parseInt(document.getElementById('tunnel-kharej-select').value) || null,
             protocol: document.getElementById('tunnel-protocol').value,
             iran_port: parseInt(document.getElementById('iran-port').value),
             control_port: parseInt(document.getElementById('control-port').value),
@@ -390,7 +392,7 @@ async function loadTunnels() {
                         <button class="btn btn-secondary" onclick="toggleTunnel(${t.id})">
                             ${t.status === 'active' ? 'Stop' : 'Start'}
                         </button>
-                        <button class="btn btn-secondary" onclick="showDeployModal(${t.id})">SSH Deploy</button>
+                        <button class="btn btn-secondary" onclick="triggerDeploy(${t.id})">SSH Deploy</button>
                         <button class="btn btn-secondary" onclick="showNodeCommand(${t.id})">Node Cmd</button>
                         <button class="btn btn-secondary" style="background: rgba(168, 85, 247, 0.15); color: #a855f7;" onclick="showTelemetry(${t.id}, '${t.name}')">Telemetry</button>
                         <button class="btn btn-secondary" style="background: rgba(0, 240, 255, 0.15); color: var(--color-cyan);" onclick="showEditModal(${t.id})">Edit</button>
@@ -415,11 +417,18 @@ async function loadNodes() {
             const tbody = document.getElementById('nodes-body');
             tbody.innerHTML = '';
             
-            const iranSelect = document.getElementById('deploy-iran-select');
-            const kharejSelect = document.getElementById('deploy-kharej-select');
-            
-            iranSelect.innerHTML = '<option value="" disabled selected>-- Select an Iran Node --</option>';
-            kharejSelect.innerHTML = '<option value="custom">-- Custom Node (Enter details below) --</option>';
+            const tIranSelect = document.getElementById('tunnel-iran-select');
+            const tKharejSelect = document.getElementById('tunnel-kharej-select');
+            const eIranSelect = document.getElementById('edit-tunnel-iran-select');
+            const eKharejSelect = document.getElementById('edit-tunnel-kharej-select');
+
+            const iranHtml = '<option value="" disabled selected>-- Select Iran Node --</option>';
+            const kharejHtml = '<option value="" disabled selected>-- Select Kharej Node --</option>';
+
+            tIranSelect.innerHTML = iranHtml;
+            eIranSelect.innerHTML = iranHtml;
+            tKharejSelect.innerHTML = kharejHtml;
+            eKharejSelect.innerHTML = kharejHtml;
 
             nodes.forEach(n => {
                 const tr = document.createElement('tr');
@@ -438,13 +447,15 @@ async function loadNodes() {
                     const opt = document.createElement('option');
                     opt.value = n.id;
                     opt.innerText = `${n.name} (${n.host})`;
-                    iranSelect.appendChild(opt);
+                    tIranSelect.appendChild(opt.cloneNode(true));
+                    eIranSelect.appendChild(opt.cloneNode(true));
                 }
                 if (n.role === 'kharej' || n.role === 'both') {
                     const opt = document.createElement('option');
                     opt.value = n.id;
                     opt.innerText = `${n.name} (${n.host})`;
-                    kharejSelect.appendChild(opt);
+                    tKharejSelect.appendChild(opt.cloneNode(true));
+                    eKharejSelect.appendChild(opt.cloneNode(true));
                 }
             });
         }
@@ -536,6 +547,8 @@ async function showEditModal(id) {
         const t = await res.json();
         
         document.getElementById('edit-tunnel-id').value = t.id;
+        document.getElementById('edit-tunnel-iran-select').value = t.iran_node_id || '';
+        document.getElementById('edit-tunnel-kharej-select').value = t.kharej_node_id || '';
         document.getElementById('edit-tunnel-name').value = t.name;
         document.getElementById('edit-tunnel-protocol').value = t.protocol;
         document.getElementById('edit-iran-port').value = t.iran_port;
@@ -563,10 +576,26 @@ async function showEditModal(id) {
     }
 }
 
-function showDeployModal(id) {
-    document.getElementById('deploy-tunnel-id').value = id;
-    document.getElementById('deploy-modal').style.display = 'flex';
+async function triggerDeploy(id) {
+    if (!confirm("Are you sure you want to deploy this tunnel to the configured nodes?")) return;
+    
+    alert("SSH Auto-Deployment task initiated in background. Check tunnel status shortly!");
+    try {
+        const res = await apiFetch(`/api/tunnels/${id}/deploy`, {
+            method: 'POST',
+            body: JSON.stringify({})
+        });
+        if (res && res.ok) {
+            setTimeout(loadTunnels, 1500);
+        } else {
+            const errText = await res.text();
+            alert("Failed to start deploy: " + errText);
+        }
+    } catch (err) {
+        console.error(err);
+    }
 }
+window.triggerDeploy = triggerDeploy;
 
 // Helper to get auth headers for API calls
 function authHeaders() {
@@ -600,7 +629,7 @@ window.deleteTunnel = deleteTunnel;
 window.deleteNode = deleteNode;
 window.showNodeCommand = showNodeCommand;
 window.showEditModal = showEditModal;
-window.showDeployModal = showDeployModal;
+
 
 // Edit form submit & token helpers
 document.addEventListener('DOMContentLoaded', () => {
@@ -633,6 +662,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const payload = {
             id: parseInt(id),
             name: document.getElementById('edit-tunnel-name').value,
+            iran_node_id: parseInt(document.getElementById('edit-tunnel-iran-select').value) || null,
+            kharej_node_id: parseInt(document.getElementById('edit-tunnel-kharej-select').value) || null,
             protocol: document.getElementById('edit-tunnel-protocol').value,
             iran_port: parseInt(document.getElementById('edit-iran-port').value),
             control_port: parseInt(document.getElementById('edit-control-port').value),

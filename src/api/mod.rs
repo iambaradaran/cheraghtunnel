@@ -631,8 +631,20 @@ systemctl restart cheragh-node-{id}
 async fn deploy_tunnel_handler(
     Extension(state): Extension<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
-    Json(payload): Json<DeployRequest>,
+    payload_opt: Option<axum::Json<DeployRequest>>,
 ) -> impl IntoResponse {
+    let payload = payload_opt.map(|axum::Json(p)| p).unwrap_or_else(|| DeployRequest {
+        iran_node_id: None,
+        kharej_node_id: None,
+        save_node: None,
+        node_name: None,
+        host: None,
+        port: None,
+        username: None,
+        password: None,
+        private_key: None,
+        role: None,
+    });
     let tunnel_opt = db::get_tunnel_by_id(&state.db_path, id).unwrap_or(None);
     let mut tunnel = match tunnel_opt {
         Some(t) => t,
@@ -646,16 +658,17 @@ async fn deploy_tunnel_handler(
             None => return StatusCode::BAD_REQUEST.into_response(),
         }
     } else {
-        return (StatusCode::BAD_REQUEST, Json("iran_node_id required")).into_response();
+        return (StatusCode::BAD_REQUEST, axum::Json("iran_node_id required")).into_response();
     };
 
     // Get Kharej Node
-    let kharej_node = if let Some(n_id) = payload.kharej_node_id {
+    let kharej_node_id = payload.kharej_node_id.or(tunnel.kharej_node_id);
+    let kharej_node = if let Some(n_id) = kharej_node_id {
         match db::get_node_by_id(&state.db_path, n_id).unwrap_or(None) {
             Some(n) => n,
             None => return StatusCode::BAD_REQUEST.into_response(),
         }
-    } else {
+    } else if payload.host.is_some() {
         let h = payload.host.clone().unwrap_or_default();
         let p = payload.port.unwrap_or(22);
         let u = payload.username.clone().unwrap_or_else(|| "root".to_string());
@@ -679,6 +692,8 @@ async fn deploy_tunnel_handler(
             }
         }
         node
+    } else {
+        return (StatusCode::BAD_REQUEST, axum::Json("kharej_node_id or custom host details required")).into_response();
     };
 
     // Update tunnel nodes
