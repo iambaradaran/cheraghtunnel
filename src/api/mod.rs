@@ -332,21 +332,27 @@ async fn delete_tunnel_handler(
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> impl IntoResponse {
     if let Ok(Some(tunnel)) = db::get_tunnel_by_id(&state.db_path, id) {
-        if tunnel.status == "active" {
-            let state_clone = state.clone();
-            tokio::spawn(async move {
-                if let Some(i_id) = tunnel.iran_node_id {
-                    if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
-                        let _ = run_ssh_command(&n, &format!("systemctl stop cheragh-server-{} && systemctl disable cheragh-server-{}", id, id)).await;
-                    }
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Some(i_id) = tunnel.iran_node_id {
+                if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
+                    let cmd = format!(
+                        "systemctl stop cheragh-server-{} || true && systemctl disable cheragh-server-{} || true && rm -f /etc/systemd/system/cheragh-server-{}.service && rm -f /usr/local/bin/cheraghtunnel-{} && systemctl daemon-reload",
+                        id, id, id, id
+                    );
+                    let _ = run_ssh_command(&n, &cmd).await;
                 }
-                if let Some(k_id) = tunnel.kharej_node_id {
-                    if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, k_id) {
-                        let _ = run_ssh_command(&n, &format!("systemctl stop cheragh-node-{} && systemctl disable cheragh-node-{}", id, id)).await;
-                    }
+            }
+            if let Some(k_id) = tunnel.kharej_node_id {
+                if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, k_id) {
+                    let cmd = format!(
+                        "systemctl stop cheragh-node-{} || true && systemctl disable cheragh-node-{} || true && rm -f /etc/systemd/system/cheragh-node-{}.service && rm -f /usr/local/bin/cheraghtunnel-{} && systemctl daemon-reload",
+                        id, id, id, id
+                    );
+                    let _ = run_ssh_command(&n, &cmd).await;
                 }
-            });
-        }
+            }
+        });
     }
     
     match db::delete_tunnel(&state.db_path, id) {
