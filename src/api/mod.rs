@@ -98,6 +98,16 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
         login_limiter: LoginRateLimiter::new(),
     });
 
+    // Spawn background system monitor refresher to update CPU & Memory metrics
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+            let mut sys = state_clone.system_monitor.lock().await;
+            sys.refresh_cpu();
+            sys.refresh_memory();
+        }
+    });
     
     // Spawn background telemetry fetcher for remote nodes
     let db_path_clone = db_path.clone();
