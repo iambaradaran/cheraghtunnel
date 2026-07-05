@@ -187,15 +187,25 @@ async fn auth_middleware(
     let token_lock = state.session_token.lock().await;
     
     if let Some(ref valid_token) = *token_lock {
-        // Check Authorization header using constant-time comparison
-        // to prevent timing side-channel attacks on the session token.
+        // 1. Check Authorization header
         let auth_header = req.headers()
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        
         let expected = format!("Bearer {}", valid_token);
-        if constant_time_eq(auth_header.as_bytes(), expected.as_bytes()) {
+        
+        // 2. Check token in query parameter (useful for direct file downloads)
+        let query_token = req.uri().query()
+            .and_then(|q| {
+                q.split('&')
+                    .find(|p| p.starts_with("token="))
+                    .map(|p| p.trim_start_matches("token="))
+            })
+            .unwrap_or("");
+
+        if constant_time_eq(auth_header.as_bytes(), expected.as_bytes())
+            || constant_time_eq(query_token.as_bytes(), valid_token.as_bytes())
+        {
             drop(token_lock);
             return Ok(next.run(req).await);
         }

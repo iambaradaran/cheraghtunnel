@@ -167,31 +167,13 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('backup-modal').style.display = 'none';
     });
 
-    document.getElementById('download-backup-btn').addEventListener('click', async () => {
+    document.getElementById('download-backup-btn').addEventListener('click', () => {
         const token = localStorage.getItem('cheragh_session');
-        try {
-            const res = await fetch('/api/backup', {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (res.ok) {
-                const blob = await res.blob();
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.style.display = 'none';
-                a.href = url;
-                a.download = 'cheragh_backup.sqlite';
-                document.body.appendChild(a);
-                a.click();
-                setTimeout(() => {
-                    document.body.removeChild(a);
-                    window.URL.revokeObjectURL(url);
-                }, 30000);
-            } else {
-                alert("Failed to download backup.");
-            }
-        } catch (err) {
-            console.error(err);
+        if (!token) {
+            alert("Session token not found. Please log in again.");
+            return;
         }
+        window.location.href = `/api/backup?token=${encodeURIComponent(token)}`;
     });
 
     document.getElementById('restore-form').addEventListener('submit', async (e) => {
