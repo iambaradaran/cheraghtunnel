@@ -775,10 +775,12 @@ async fn backup_handler(
 ) -> impl IntoResponse {
     match tokio::fs::read(&state.db_path).await {
         Ok(data) => {
+            let len = data.len();
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "application/octet-stream")
                 .header(header::CONTENT_DISPOSITION, "attachment; filename=\"cheragh_backup.sqlite\"")
+                .header(header::CONTENT_LENGTH, len)
                 .body(axum::body::Body::from(data))
                 .unwrap()
         }

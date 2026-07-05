@@ -185,7 +185,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 setTimeout(() => {
                     document.body.removeChild(a);
                     window.URL.revokeObjectURL(url);
-                }, 100);
+                }, 30000);
             } else {
                 alert("Failed to download backup.");
             }
