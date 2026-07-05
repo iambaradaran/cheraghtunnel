@@ -156,6 +156,16 @@
                         <input type="number" id="kharej-port" required placeholder="443" min="1" max="65535">
                     </div>
                 </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="quota-limit">Quota Limit (GB - 0 for unlimited)</label>
+                        <input type="number" id="quota-limit" value="0" min="0" step="0.1" placeholder="e.g. 100">
+                    </div>
+                    <div class="form-group">
+                        <label for="speed-limit">Speed Limit (KB/s - 0 for unlimited)</label>
+                        <input type="number" id="speed-limit" value="0" min="0" placeholder="e.g. 5000">
+                    </div>
+                </div>
                 <div class="form-group">
                     <label for="backup-ips">Backup Iran IPs (Comma separated - Optional)</label>
                     <input type="text" id="backup-ips" placeholder="e.g. 192.168.1.5, 10.0.0.8">
@@ -307,6 +317,16 @@
                     <label for="edit-kharej-port">Kharej Port (Target Local Port)</label>
                     <input type="number" id="edit-kharej-port" required placeholder="e.g. 8080" min="1" max="65535">
                 </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="edit-quota-limit">Quota Limit (GB - 0 for unlimited)</label>
+                        <input type="number" id="edit-quota-limit" value="0" min="0" step="0.1" placeholder="e.g. 100">
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-speed-limit">Speed Limit (KB/s - 0 for unlimited)</label>
+                        <input type="number" id="edit-speed-limit" value="0" min="0" placeholder="e.g. 5000">
+                    </div>
+                </div>
                 <div class="form-group">
                     <label for="edit-backup-ips">Backup Iran IPs (Comma separated - Optional)</label>
                     <input type="text" id="edit-backup-ips" placeholder="e.g. 192.168.1.5, 10.0.0.8">
@@ -446,6 +466,6 @@
         </div>
     </div>
 
-    <script src="/app.js?v=1.10.7"></script>
+    <script src="/app.js?v=1.10.8"></script>
 </body>
 </html>
