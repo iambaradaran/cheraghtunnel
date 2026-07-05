@@ -175,7 +175,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     document.getElementById('download-backup-btn').addEventListener('click', async () => {
-        const token = localStorage.getItem('token');
+        const token = localStorage.getItem('cheragh_session');
         try {
             const res = await fetch('/api/backup', {
                 headers: { 'Authorization': `Bearer ${token}` }
@@ -211,7 +211,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.innerText = "Restoring...";
         btn.disabled = true;
 
-        const token = localStorage.getItem('token');
+        const token = localStorage.getItem('cheragh_session');
         try {
             const res = await fetch('/api/restore', {
                 method: 'POST',
