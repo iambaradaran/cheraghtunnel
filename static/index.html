@@ -169,6 +169,10 @@
                     <label for="decoy-url">Decoy Website URL / SNI (WSS/TLS/Mirage/Aura)</label>
                     <input type="text" id="decoy-url" placeholder="e.g. google.com">
                 </div>
+                <div class="form-row" style="align-items: center; margin-bottom: 15px; margin-top: 10px;">
+                    <input type="checkbox" id="tunnel-hopping" style="width: auto; margin-right: 10px;">
+                    <label for="tunnel-hopping" style="margin: 0;">Enable Dynamic Port Hopping (Random Port Hopping)</label>
+                </div>
                 <div class="modal-actions">
                     <button type="button" id="close-create-modal" class="btn btn-secondary">Cancel</button>
                     <button type="submit" class="btn btn-primary">Create Tunnel</button>
@@ -314,6 +318,10 @@
                     <label for="edit-decoy-url">Decoy Website URL / SNI (WSS/TLS/Mirage/Aura)</label>
                     <input type="text" id="edit-decoy-url" placeholder="e.g. google.com">
                 </div>
+                <div class="form-row" style="align-items: center; margin-bottom: 15px; margin-top: 10px;">
+                    <input type="checkbox" id="edit-tunnel-hopping" style="width: auto; margin-right: 10px;">
+                    <label for="edit-tunnel-hopping" style="margin: 0;">Enable Dynamic Port Hopping (Random Port Hopping)</label>
+                </div>
                 <div class="form-group">
                     <label for="edit-tunnel-token">Auth Token</label>
                     <div style="display: flex; gap: 10px;">
@@ -438,6 +446,6 @@
         </div>
     </div>
 
-    <script src="/app.js?v=1.10.6"></script>
+    <script src="/app.js?v=1.10.7"></script>
 </body>
 </html>

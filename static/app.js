@@ -98,6 +98,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 : null,
             transport_options: extractDynamicOptions('dynamic-options-container'),
             backup_ips: document.getElementById('backup-ips').value || null,
+            port_hopping: document.getElementById('tunnel-hopping').checked ? 1 : 0,
             status: "inactive",
             stats_rx: 0,
             stats_tx: 0,
@@ -547,6 +548,7 @@ async function showEditModal(id) {
         renderDynamicOptions(t.protocol, 'edit-dynamic-options-container', initialOpts);
         document.getElementById('edit-tunnel-token').value = t.token;
         document.getElementById('edit-decoy-url').value = t.decoy_url || '';
+        document.getElementById('edit-tunnel-hopping').checked = t.port_hopping === 1;
         if (window.toggleDecoyVisibility) {
             window.toggleDecoyVisibility(t.protocol, 'edit-decoy-group');
         }
@@ -637,6 +639,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 : null,
             transport_options: extractDynamicOptions('edit-dynamic-options-container'),
             backup_ips: document.getElementById('edit-backup-ips').value || null,
+            port_hopping: document.getElementById('edit-tunnel-hopping').checked ? 1 : 0,
             status: "inactive",
             stats_rx: 0,
             stats_tx: 0,
