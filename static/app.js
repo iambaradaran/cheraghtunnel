@@ -182,7 +182,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 a.download = 'cheragh_backup.sqlite';
                 document.body.appendChild(a);
                 a.click();
-                window.URL.revokeObjectURL(url);
+                setTimeout(() => {
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                }, 100);
             } else {
                 alert("Failed to download backup.");
             }
