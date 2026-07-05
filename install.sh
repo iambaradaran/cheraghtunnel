@@ -20,6 +20,7 @@ echo "----------------------------------------------------------"
 # 1. Custom Web Panel Port
 read -p "Enter Web Panel Port [Default: 8000]: " PANEL_PORT < /dev/tty
 PANEL_PORT=${PANEL_PORT:-8000}
+PANEL_PORT=$(echo "$PANEL_PORT" | tr -d '\r')
 
 # Validate port is a number
 if ! [[ "$PANEL_PORT" =~ ^[0-9]+$ ]] || [ "$PANEL_PORT" -lt 1 ] || [ "$PANEL_PORT" -gt 65535 ]; then
@@ -30,6 +31,7 @@ fi
 # 2. Custom Admin Username
 read -p "Enter Admin Username [Default: admin]: " ADMIN_USER < /dev/tty
 ADMIN_USER=${ADMIN_USER:-admin}
+ADMIN_USER=$(echo "$ADMIN_USER" | tr -d '\r')
 
 # 3. Custom Admin Password
 read -s -p "Enter Admin Password [Press Enter to generate a random one]: " ADMIN_PASS < /dev/tty
@@ -38,6 +40,7 @@ if [ -z "$ADMIN_PASS" ]; then
   ADMIN_PASS="cheragh_$(openssl rand -hex 3 2>/dev/null || echo $((RANDOM % 90000 + 10000)))"
   echo "Generated random password: $ADMIN_PASS"
 fi
+ADMIN_PASS=$(echo "$ADMIN_PASS" | tr -d '\r')
 
 # Setup config and DB folders
 mkdir -p /etc/cheraghtunnel
