@@ -113,8 +113,18 @@ kill $PID
 
 # Apply custom credentials
 echo "Applying custom credentials to Database..."
+
+# Hash the admin password using SHA-256 for database insertion
+if command -v openssl &> /dev/null; then
+  HASHED_PASS=$(echo -n "$ADMIN_PASS" | openssl dgst -sha256 | sed 's/^.* //')
+elif command -v sha256sum &> /dev/null; then
+  HASHED_PASS=$(echo -n "$ADMIN_PASS" | sha256sum | cut -d' ' -f1)
+else
+  HASHED_PASS="$ADMIN_PASS"
+fi
+
 sqlite3 /var/lib/cheraghtunnel/cheraghtunnel.db "INSERT OR REPLACE INTO settings (key, value) VALUES ('admin_username', '$ADMIN_USER');"
-sqlite3 /var/lib/cheraghtunnel/cheraghtunnel.db "INSERT OR REPLACE INTO settings (key, value) VALUES ('admin_password', '$ADMIN_PASS');"
+sqlite3 /var/lib/cheraghtunnel/cheraghtunnel.db "INSERT OR REPLACE INTO settings (key, value) VALUES ('admin_password', '$HASHED_PASS');"
 
 # Setup systemd service
 echo "Configuring systemd service daemon..."
