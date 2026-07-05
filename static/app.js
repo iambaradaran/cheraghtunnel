@@ -133,15 +133,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('cmd-modal').style.display = 'none';
     });
 
-    // Close deploy modal
-    document.getElementById('close-deploy-modal').addEventListener('click', () => {
-        document.getElementById('deploy-modal').style.display = 'none';
-    });
 
-    // Node Deploy Custom Fields Toggle
-    const deployKharejSelect = document.getElementById('deploy-kharej-select');
-    const deployIranSelect = document.getElementById('deploy-iran-select');
-    
     document.getElementById('open-add-node-modal').addEventListener('click', () => {
         document.getElementById('add-node-modal').style.display = 'flex';
     });
@@ -243,24 +235,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     
-    const deployCustomFields = document.getElementById('deploy-custom-fields');
-    deployKharejSelect.addEventListener('change', () => {
-        if (deployKharejSelect.value === 'custom') {
-            deployCustomFields.style.display = 'block';
-        } else {
-            deployCustomFields.style.display = 'none';
-        }
-    });
 
-    const saveNodeCheckbox = document.getElementById('save-node-checkbox');
-    const saveNodeNameGroup = document.getElementById('save-node-name-group');
-    saveNodeCheckbox.addEventListener('change', () => {
-        if (saveNodeCheckbox.checked) {
-            saveNodeNameGroup.style.display = 'block';
-        } else {
-            saveNodeNameGroup.style.display = 'none';
-        }
-    });
 
     // Nodes Modal
     document.getElementById('manage-nodes-btn').addEventListener('click', () => {
@@ -272,54 +247,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('nodes-modal').style.display = 'none';
     });
 
-    // SSH Deploy Form Submit
-    const deployForm = document.getElementById('deploy-tunnel-form');
-    deployForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const id = document.getElementById('deploy-tunnel-id').value;
-        const iranIdVal = document.getElementById('deploy-iran-select').value;
-        const kharejIdVal = document.getElementById('deploy-kharej-select').value;
-        
-        if (!iranIdVal) {
-            alert("Iran Node is required!");
-            return;
-        }
 
-        const payload = {
-            iran_node_id: parseInt(iranIdVal)
-        };
-
-        if (kharejIdVal !== 'custom') {
-            payload.kharej_node_id = parseInt(kharejIdVal);
-        } else {
-            payload.host = document.getElementById('ssh-host').value;
-            payload.port = parseInt(document.getElementById('ssh-port').value);
-            payload.username = document.getElementById('ssh-user').value;
-            payload.password = document.getElementById('ssh-password').value || null;
-            payload.private_key = document.getElementById('ssh-key').value || null;
-            payload.save_node = document.getElementById('save-node-checkbox').checked;
-            payload.node_name = document.getElementById('save-node-name').value || null;
-            payload.role = "kharej";
-        }
-
-        document.getElementById('deploy-modal').style.display = 'none';
-        alert("SSH Auto-Deployment task initiated in background. Check tunnel status shortly!");
-
-        try {
-            const res = await apiFetch(`/api/tunnels/${id}/deploy`, {
-                method: 'POST',
-                body: JSON.stringify(payload)
-            });
-            if (res && res.ok) {
-                setTimeout(loadTunnels, 1500);
-            } else {
-                const errText = await res.text();
-                alert("Failed to start deploy: " + errText);
-            }
-        } catch (err) {
-            console.error(err);
-        }
-    });
 });
 
 function showDashboard() {
