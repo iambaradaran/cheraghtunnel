@@ -138,9 +138,21 @@ systemctl daemon-reload
 systemctl enable cheraghtunnel
 systemctl start cheraghtunnel
 
+# Get public and local IPs for display
+PUBLIC_IP=$(curl -s --max-time 3 ifconfig.me || curl -s --max-time 3 api.ipify.org || echo "")
+LOCAL_IPS=$(hostname -I 2>/dev/null || echo "")
+
 echo "=========================================================="
 echo "  CheraghTunnel Web Panel successfully installed!"
-echo "  Access URL: http://$(curl -s ifconfig.me || echo "YOUR_SERVER_IP"):$PANEL_PORT"
+echo "  Access URLs:"
+if [ -n "$PUBLIC_IP" ]; then
+  echo "    - Public: http://$PUBLIC_IP:$PANEL_PORT"
+fi
+for ip in $LOCAL_IPS; do
+  if [ "$ip" != "127.0.0.1" ]; then
+    echo "    - Interface: http://$ip:$PANEL_PORT"
+  fi
+done
 echo "  "
 echo "  Credentials:"
 echo "  Username: $ADMIN_USER"
