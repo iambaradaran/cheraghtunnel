@@ -50,7 +50,7 @@ systemctl stop cheraghtunnel 2>/dev/null || true
 # Attempt to download pre-compiled release binary to save time (5 seconds vs 15 minutes)
 echo "Attempting to download pre-compiled CheraghTunnel release binary..."
 DOWNLOAD_SUCCESS=false
-if curl -sSfL -o /tmp/cheraghtunnel-new "https://github.com/iambaradaran/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64"; then
+if curl -sSfL -o /tmp/cheraghtunnel-new "https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64"; then
     mv /tmp/cheraghtunnel-new /usr/local/bin/cheraghtunnel
     chmod +x /usr/local/bin/cheraghtunnel
     echo "Successfully downloaded pre-compiled binary! Skipping Rust compilation."
@@ -81,7 +81,7 @@ if [ "$DOWNLOAD_SUCCESS" = false ]; then
     else
         echo "Cargo.toml not found in current directory. Cloning repository from GitHub..."
         rm -rf /tmp/cheraghtunnel-source
-        git clone https://github.com/iambaradaran/cheraghtunnel.git /tmp/cheraghtunnel-source
+        git clone https://github.com/iam4lucard/cheraghtunnel.git /tmp/cheraghtunnel-source
         cd /tmp/cheraghtunnel-source
         # Source cargo again just in case path needs refresh
         source $HOME/.cargo/env 2>/dev/null || . $HOME/.cargo/env 2>/dev/null || true
