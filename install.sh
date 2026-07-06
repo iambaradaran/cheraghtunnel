@@ -53,14 +53,35 @@ systemctl stop cheraghtunnel 2>/dev/null || true
 # Attempt to download pre-compiled release binary to save time (5 seconds vs 15 minutes)
 echo "Attempting to download pre-compiled CheraghTunnel release binary..."
 DOWNLOAD_SUCCESS=false
-if curl -sSfL -o /tmp/cheraghtunnel-new "https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64"; then
+
+ARCH=$(uname -m)
+if [ "$ARCH" = "x86_64" ]; then
+  BINARY_SUFFIX="amd64"
+elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+  BINARY_SUFFIX="arm64"
+else
+  BINARY_SUFFIX="amd64"
+fi
+
+URL_DIRECT="https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-$BINARY_SUFFIX"
+URL_MIRROR="https://ghfast.top/https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-$BINARY_SUFFIX"
+
+if curl -sSfL --connect-timeout 10 --max-time 60 -o /tmp/cheraghtunnel-new "$URL_DIRECT"; then
     mv /tmp/cheraghtunnel-new /usr/local/bin/cheraghtunnel
     chmod +x /usr/local/bin/cheraghtunnel
     echo "Successfully downloaded pre-compiled binary! Skipping Rust compilation."
     DOWNLOAD_SUCCESS=true
 else
-    rm -f /tmp/cheraghtunnel-new
-    echo "Pre-compiled release binary not found or download failed. Falling back to compilation from source..."
+    echo "Direct download failed or timed out. Trying mirror..."
+    if curl -sSfL --connect-timeout 10 --max-time 60 -o /tmp/cheraghtunnel-new "$URL_MIRROR"; then
+        mv /tmp/cheraghtunnel-new /usr/local/bin/cheraghtunnel
+        chmod +x /usr/local/bin/cheraghtunnel
+        echo "Successfully downloaded pre-compiled binary via mirror! Skipping Rust compilation."
+        DOWNLOAD_SUCCESS=true
+    else
+        rm -f /tmp/cheraghtunnel-new
+        echo "Pre-compiled release binary download failed. Falling back to compilation from source..."
+    fi
 fi
 
 if [ "$DOWNLOAD_SUCCESS" = false ]; then
@@ -84,7 +105,10 @@ if [ "$DOWNLOAD_SUCCESS" = false ]; then
     else
         echo "Cargo.toml not found in current directory. Cloning repository from GitHub..."
         rm -rf /tmp/cheraghtunnel-source
-        git clone https://github.com/iam4lucard/cheraghtunnel.git /tmp/cheraghtunnel-source
+        if ! git clone --depth 1 https://github.com/iam4lucard/cheraghtunnel.git /tmp/cheraghtunnel-source; then
+            echo "Direct clone failed. Trying mirror..."
+            git clone --depth 1 https://ghfast.top/https://github.com/iam4lucard/cheraghtunnel.git /tmp/cheraghtunnel-source
+        fi
         cd /tmp/cheraghtunnel-source
         # Source cargo again just in case path needs refresh
         source $HOME/.cargo/env 2>/dev/null || . $HOME/.cargo/env 2>/dev/null || true
