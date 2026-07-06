@@ -330,11 +330,13 @@ async fn create_tunnel_handler(
     match db::get_tunnels(&state.db_path) {
         Ok(tunnels) => {
             for t in tunnels {
-                if t.iran_port == payload.iran_port {
-                    return (StatusCode::BAD_REQUEST, "Public port is already in use by another tunnel").into_response();
-                }
-                if t.control_port == payload.control_port {
-                    return (StatusCode::BAD_REQUEST, "Control port is already in use by another tunnel").into_response();
+                if t.iran_node_id == payload.iran_node_id {
+                    if t.iran_port == payload.iran_port {
+                        return (StatusCode::BAD_REQUEST, "Public port is already in use on this server").into_response();
+                    }
+                    if t.control_port == payload.control_port {
+                        return (StatusCode::BAD_REQUEST, "Control port is already in use on this server").into_response();
+                    }
                 }
             }
         }
@@ -401,11 +403,13 @@ async fn update_tunnel_handler(
         Ok(tunnels) => {
             for t in tunnels {
                 if t.id != Some(id) {
-                    if t.iran_port == payload.iran_port {
-                        return (StatusCode::BAD_REQUEST, "Public port is already in use by another tunnel").into_response();
-                    }
-                    if t.control_port == payload.control_port {
-                        return (StatusCode::BAD_REQUEST, "Control port is already in use by another tunnel").into_response();
+                    if t.iran_node_id == payload.iran_node_id {
+                        if t.iran_port == payload.iran_port {
+                            return (StatusCode::BAD_REQUEST, "Public port is already in use on this server").into_response();
+                        }
+                        if t.control_port == payload.control_port {
+                            return (StatusCode::BAD_REQUEST, "Control port is already in use on this server").into_response();
+                        }
                     }
                 }
             }
