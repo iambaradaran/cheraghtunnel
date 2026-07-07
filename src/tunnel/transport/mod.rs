@@ -21,6 +21,7 @@ use kcp_tokio::KcpStream;
 pub struct WsByteStream<S> {
     pub ws: tokio_tungstenite::WebSocketStream<S>,
     read_buf: Vec<u8>,
+    read_pos: usize,
 }
 
 impl<S> WsByteStream<S> {
@@ -28,6 +29,7 @@ impl<S> WsByteStream<S> {
         Self {
             ws,
             read_buf: Vec::new(),
+            read_pos: 0,
         }
     }
 }
@@ -42,10 +44,15 @@ where
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         loop {
-            if !self.read_buf.is_empty() {
-                let n = std::cmp::min(buf.remaining(), self.read_buf.len());
-                buf.put_slice(&self.read_buf[..n]);
-                self.read_buf.drain(..n);
+            let available = self.read_buf.len() - self.read_pos;
+            if available > 0 {
+                let n = std::cmp::min(buf.remaining(), available);
+                buf.put_slice(&self.read_buf[self.read_pos..self.read_pos + n]);
+                self.read_pos += n;
+                if self.read_pos >= self.read_buf.len() {
+                    self.read_buf.clear();
+                    self.read_pos = 0;
+                }
                 return Poll::Ready(Ok(()));
             }
 
@@ -54,14 +61,20 @@ where
                     match msg {
                         Message::Binary(bin) => {
                             self.read_buf = bin;
+                            self.read_pos = 0;
                         }
                         Message::Text(txt) => {
                             self.read_buf = txt.into_bytes();
+                            self.read_pos = 0;
+                        }
+                        Message::Ping(data) => {
+                            let _ = Pin::new(&mut self.ws).start_send(Message::Pong(data));
+                            let _ = Pin::new(&mut self.ws).poll_flush(cx);
                         }
                         Message::Close(_) => {
                             return Poll::Ready(Ok(())); // EOF
                         }
-                        _ => {} // Ignore Ping/Pong
+                        _ => {}
                     }
                 }
                 Poll::Ready(Some(Err(e))) => {
@@ -386,7 +399,7 @@ fn generate_self_signed_config() -> Result<rustls::ServerConfig, Box<dyn Error +
     let mut server_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, private_key)?;
-    server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(server_config)
 }
@@ -416,9 +429,18 @@ fn load_custom_tls_config(cert_path: &Path, key_path: &Path) -> Result<rustls::S
     let mut server_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, private_key)?;
-    server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     
     Ok(server_config)
+}
+
+fn get_ws_config() -> tungstenite::protocol::WebSocketConfig {
+    tungstenite::protocol::WebSocketConfig {
+        max_frame_size: Some(256 * 1024),      // 256KB
+        max_message_size: Some(1024 * 1024),    // 1MB
+        max_write_buffer_size: 512 * 1024,      // 512KB
+        ..Default::default()
+    }
 }
 
 use std::sync::OnceLock;
@@ -511,7 +533,7 @@ fn create_client_tls_config() -> rustls::ClientConfig {
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     config
 }
 
@@ -755,8 +777,18 @@ pub async fn client_handshake(
             Ok(TransportStream::ObfuscatedWs(ObfuscatedStream::new(WsByteStream::new(ws_stream))))
         }
         "glimmer" | "wsmux" => {
-            let ws_url = format!("ws://{}/ws?token={}", decoy_str, token);
-            let (ws_stream, _) = tokio_tungstenite::client_async(ws_url, socket).await?;
+            use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+            let ws_url = format!("ws://{}/ws", decoy_str);
+            let mut request = ws_url.into_client_request()?;
+            request.headers_mut().insert(
+                "Sec-WebSocket-Protocol",
+                format!("tunnel, {}", token).parse().unwrap(),
+            );
+            let (ws_stream, _) = tokio_tungstenite::client_async_with_config(
+                request,
+                socket,
+                Some(get_ws_config()),
+            ).await?;
             Ok(TransportStream::Ws(WsByteStream::new(ws_stream)))
         }
         "nova" | "httpsmux" => {
@@ -775,8 +807,18 @@ pub async fn client_handshake(
             let domain = ServerName::try_from(decoy_str.as_str())?.to_owned();
             let tls_stream = connector.connect(domain, socket).await?;
             
-            let ws_url = format!("wss://{}/wss?token={}", decoy_str, token);
-            let (ws_stream, _) = tokio_tungstenite::client_async(ws_url, tls_stream).await?;
+            use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+            let ws_url = format!("wss://{}/wss", decoy_str);
+            let mut request = ws_url.into_client_request()?;
+            request.headers_mut().insert(
+                "Sec-WebSocket-Protocol",
+                format!("tunnel, {}", token).parse().unwrap(),
+            );
+            let (ws_stream, _) = tokio_tungstenite::client_async_with_config(
+                request,
+                tls_stream,
+                Some(get_ws_config()),
+            ).await?;
             Ok(TransportStream::Wss(WsByteStream::new(ws_stream)))
         }
         "mirage" | "realitymux" => {
@@ -798,6 +840,50 @@ pub async fn client_handshake(
             perform_client_upgrade_check(&mut socket, token).await?;
             Ok(TransportStream::Tcp(socket))
         }
+    }
+}
+
+fn make_ws_auth_callback(
+    token: String,
+    decoy_str: String,
+    token_found: Arc<std::sync::atomic::AtomicBool>,
+) -> impl FnOnce(
+    &tungstenite::handshake::server::Request,
+    tungstenite::handshake::server::Response,
+) -> Result<tungstenite::handshake::server::Response, tungstenite::handshake::server::ErrorResponse> {
+    move |req, mut resp| {
+        // 1. Check query parameter
+        if let Some(query) = req.uri().query() {
+            if query.contains(&format!("token={}", token)) {
+                token_found.store(true, std::sync::atomic::Ordering::Relaxed);
+                return Ok(resp);
+            }
+        }
+
+        // 2. Check Sec-WebSocket-Protocol header
+        if let Some(proto) = req.headers().get("Sec-WebSocket-Protocol").and_then(|v| v.to_str().ok()) {
+            if proto.contains(&token) {
+                token_found.store(true, std::sync::atomic::Ordering::Relaxed);
+                resp.headers_mut().insert(
+                    "Sec-WebSocket-Protocol",
+                    proto.parse().unwrap(),
+                );
+                return Ok(resp);
+            }
+        }
+
+        let redirect_url = if decoy_str.starts_with("http://") || decoy_str.starts_with("https://") {
+            decoy_str
+        } else {
+            format!("https://{}", decoy_str)
+        };
+
+        Err(tungstenite::http::Response::builder()
+            .status(302)
+            .header("Location", redirect_url)
+            .header("Connection", "close")
+            .body(Some("".to_string()))
+            .unwrap())
     }
 }
 
@@ -836,29 +922,16 @@ pub async fn server_handshake(
             Ok(TransportStream::ObfuscatedWs(ObfuscatedStream::new(WsByteStream::new(ws_stream))))
         }
         "glimmer" | "wsmux" => {
-            let mut token_found = false;
+            use std::sync::atomic::{AtomicBool, Ordering};
+            let token_found = Arc::new(AtomicBool::new(false));
             let decoy_str = decoy.clone().unwrap_or_else(|| "google.com".to_string());
-            let callback = |req: &tungstenite::handshake::server::Request, resp: tungstenite::handshake::server::Response| {
-                if let Some(query) = req.uri().query() {
-                    if query.contains(&format!("token={}", token)) {
-                        token_found = true;
-                        return Ok(resp);
-                    }
-                }
-                let redirect_url = if decoy_str.starts_with("http://") || decoy_str.starts_with("https://") {
-                    decoy_str.clone()
-                } else {
-                    format!("https://{}", decoy_str)
-                };
-                Err(tungstenite::http::Response::builder()
-                    .status(302)
-                    .header("Location", redirect_url)
-                    .header("Connection", "close")
-                    .body(Some("".to_string()))
-                    .unwrap())
-            };
-            let ws_stream = tokio_tungstenite::accept_hdr_async(socket, callback).await?;
-            if !token_found {
+            let callback = make_ws_auth_callback(token.to_string(), decoy_str, token_found.clone());
+            let ws_stream = tokio_tungstenite::accept_hdr_async_with_config(
+                socket,
+                callback,
+                Some(get_ws_config()),
+            ).await?;
+            if !token_found.load(Ordering::Relaxed) {
                 return Err("WebSocket auth token validation failed".into());
             }
             Ok(TransportStream::Ws(WsByteStream::new(ws_stream)))
@@ -880,29 +953,16 @@ pub async fn server_handshake(
             let acceptor = TlsAcceptor::from(config);
             let tls_stream = acceptor.accept(socket).await?;
 
-            let mut token_found = false;
+            use std::sync::atomic::{AtomicBool, Ordering};
+            let token_found = Arc::new(AtomicBool::new(false));
             let decoy_str = decoy.clone().unwrap_or_else(|| "google.com".to_string());
-            let callback = |req: &tungstenite::handshake::server::Request, resp: tungstenite::handshake::server::Response| {
-                if let Some(query) = req.uri().query() {
-                    if query.contains(&format!("token={}", token)) {
-                        token_found = true;
-                        return Ok(resp);
-                    }
-                }
-                let redirect_url = if decoy_str.starts_with("http://") || decoy_str.starts_with("https://") {
-                    decoy_str.clone()
-                } else {
-                    format!("https://{}", decoy_str)
-                };
-                Err(tungstenite::http::Response::builder()
-                    .status(302)
-                    .header("Location", redirect_url)
-                    .header("Connection", "close")
-                    .body(Some("".to_string()))
-                    .unwrap())
-            };
-            let ws_stream = tokio_tungstenite::accept_hdr_async(tls_stream, callback).await?;
-            if !token_found {
+            let callback = make_ws_auth_callback(token.to_string(), decoy_str, token_found.clone());
+            let ws_stream = tokio_tungstenite::accept_hdr_async_with_config(
+                tls_stream,
+                callback,
+                Some(get_ws_config()),
+            ).await?;
+            if !token_found.load(Ordering::Relaxed) {
                 return Err("WSS auth token validation failed".into());
             }
             Ok(TransportStream::WssServer(WsByteStream::new(ws_stream)))

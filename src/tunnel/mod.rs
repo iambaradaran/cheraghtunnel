@@ -332,6 +332,7 @@ pub async fn run_server(
                 let mut cfg = yamux::Config::default();
                 cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
                 cfg.set_max_buffer_size(1024 * 1024 * 4);
+                cfg.set_receive_window(1024 * 1024);
                 
                 let conn = yamux::Connection::new(control_socket.compat(), cfg, yamux::Mode::Client);
                 let ctrl = conn.control();
@@ -687,6 +688,7 @@ pub async fn run_client(
                 let mut cfg = yamux::Config::default();
                 cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
                 cfg.set_max_buffer_size(1024 * 1024 * 4);
+                cfg.set_receive_window(1024 * 1024);
                 let conn = yamux::Connection::new(control_socket.compat(), cfg, yamux::Mode::Server);
                 let mut incoming = Box::pin(yamux::into_stream(conn));
 
