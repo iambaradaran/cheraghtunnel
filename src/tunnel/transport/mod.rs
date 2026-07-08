@@ -287,7 +287,21 @@ where
                     if this.read_buf.len() < end_total {
                         break;
                     }
-                    // Extend payload_buf using the indexed slice — borrow ends before advance.
+                    
+                    // Optimization: If payload_buf is empty and caller's buf has enough remaining space,
+                    // copy the payload bytes directly into the output buffer to completely bypass payload_buf!
+                    if this.payload_buf.is_empty() && buf.remaining() >= p_len {
+                        buf.put_slice(&this.read_buf[start..end_payload]);
+                        this.read_pos = end_total;
+                        if this.read_pos >= 4096 {
+                            this.read_buf.drain(..this.read_pos);
+                            this.read_pos = 0;
+                        }
+                        this.read_state = ReadState::Header;
+                        return Poll::Ready(Ok(()));
+                    }
+
+                    // Otherwise, extend payload_buf as fallback.
                     this.payload_buf.extend(&this.read_buf[start..end_payload]);
                     this.read_pos = end_total;
                     if this.read_pos >= 4096 {
