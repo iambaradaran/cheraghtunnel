@@ -594,10 +594,24 @@ fn generate_server_script(tunnel: &db::Tunnel) -> String {
         r#"#!/bin/bash
 set -e
 mkdir -p /etc/cheraghtunnel
-curl -sSfL -o /tmp/cheraghtunnel-new "https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64" || true
-if [ -f "/tmp/cheraghtunnel-new" ]; then
-    mv /tmp/cheraghtunnel-new /usr/local/bin/cheraghtunnel-{id}
-    chmod +x /usr/local/bin/cheraghtunnel-{id}
+
+# Stop the existing service BEFORE replacing the binary to prevent ETXTBSY (Text file busy)
+systemctl stop cheragh-server-{id} 2>/dev/null || true
+
+# Detect architecture
+ARCH=$(uname -m)
+if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+    BINARY_URL="https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-arm64"
+else
+    BINARY_URL="https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64"
+fi
+
+# Download to a temp file on the SAME filesystem as the destination to ensure atomic rename
+curl -sSfL -o /usr/local/bin/cheraghtunnel-{id}.tmp "$BINARY_URL" || true
+if [ -f "/usr/local/bin/cheraghtunnel-{id}.tmp" ]; then
+    chmod +x /usr/local/bin/cheraghtunnel-{id}.tmp
+    # Atomic rename: replaces binary only after fully downloaded, avoids Text-file-busy
+    mv /usr/local/bin/cheraghtunnel-{id}.tmp /usr/local/bin/cheraghtunnel-{id}
 fi
 
 cat << 'EOF' > /etc/systemd/system/cheragh-server-{id}.service
@@ -608,6 +622,7 @@ After=network.target
 [Service]
 ExecStart=/usr/local/bin/cheraghtunnel-{id} server -c {control_port} -p {public_port} -t '{token}' --protocol {protocol} --decoy '{decoy}' {port_hop_flag} --api-port {api_port}
 Restart=always
+RestartSec=2s
 User=root
 
 [Install]
@@ -616,7 +631,7 @@ EOF
 
 systemctl daemon-reload
 systemctl enable cheragh-server-{id}
-systemctl restart cheragh-server-{id}
+systemctl start cheragh-server-{id}
 "#,
         id = tunnel.id.unwrap_or(0),
         control_port = tunnel.control_port,
@@ -637,10 +652,24 @@ fn generate_client_script(tunnel: &db::Tunnel, iran_ip: &str) -> String {
         r#"#!/bin/bash
 set -e
 mkdir -p /etc/cheraghtunnel
-curl -sSfL -o /tmp/cheraghtunnel-new "https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64" || true
-if [ -f "/tmp/cheraghtunnel-new" ]; then
-    mv /tmp/cheraghtunnel-new /usr/local/bin/cheraghtunnel-{id}
-    chmod +x /usr/local/bin/cheraghtunnel-{id}
+
+# Stop the existing service BEFORE replacing the binary to prevent ETXTBSY (Text file busy)
+systemctl stop cheragh-node-{id} 2>/dev/null || true
+
+# Detect architecture
+ARCH=$(uname -m)
+if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+    BINARY_URL="https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-arm64"
+else
+    BINARY_URL="https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64"
+fi
+
+# Download to a temp file on the SAME filesystem as the destination to ensure atomic rename
+curl -sSfL -o /usr/local/bin/cheraghtunnel-{id}.tmp "$BINARY_URL" || true
+if [ -f "/usr/local/bin/cheraghtunnel-{id}.tmp" ]; then
+    chmod +x /usr/local/bin/cheraghtunnel-{id}.tmp
+    # Atomic rename: replaces binary only after fully downloaded, avoids Text-file-busy
+    mv /usr/local/bin/cheraghtunnel-{id}.tmp /usr/local/bin/cheraghtunnel-{id}
 fi
 
 cat << 'EOF' > /etc/systemd/system/cheragh-node-{id}.service
@@ -651,6 +680,7 @@ After=network.target
 [Service]
 ExecStart=/usr/local/bin/cheraghtunnel-{id} client -s {iran_ip} -c {control_port} -p {public_port} -l 127.0.0.1:{kharej_port} -t '{token}' --protocol {protocol} --tunnel-id {id} --decoy '{decoy}' {port_hop_flag}
 Restart=always
+RestartSec=2s
 User=root
 
 [Install]
@@ -659,7 +689,7 @@ EOF
 
 systemctl daemon-reload
 systemctl enable cheragh-node-{id}
-systemctl restart cheragh-node-{id}
+systemctl start cheragh-node-{id}
 "#,
         id = tunnel.id.unwrap_or(0),
         iran_ip = iran_ip,
