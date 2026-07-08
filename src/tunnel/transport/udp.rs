@@ -397,19 +397,37 @@ impl UdpVirtualStreamInner {
         let padding_len = rng.gen_range(16..128); // Dynamic random padding size
 
         if self.mode == UdpMode::Halo {
-            // Halo (WebRTC Signature): 
-            // [0x00] + [pkt_type] + [payload_len (2)] + [STUN Magic (4)] + [seq (4)] + [ack (4)] + [payload] + [padding]
-            raw.extend_from_slice(&[0x00, pkt_type]);
-            raw.extend_from_slice(&(payload.len() as u16).to_be_bytes());
-            raw.extend_from_slice(&[0x21, 0x12, 0xA4, 0x42]);
+            // Halo (WebRTC/STUN Simulation):
+            // [Message Type (2)] + [Message Length (2)] + [Magic Cookie (4)] + [Transaction ID (12)]
+            
+            // Build the unencrypted inner body
+            let mut body = Vec::with_capacity(64 + payload.len());
+            body.push(pkt_type); // Our custom type hidden inside
+            body.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            body.extend_from_slice(payload);
+            
+            // Bulk random padding
+            let old_len = body.len();
+            body.resize(old_len + padding_len, 0);
+            rng.fill(&mut body[old_len..]);
+            
+            // Encrypt the body using seq as nonce!
+            self.crypt_buffer(&mut body, seq);
+            
+            // Construct the perfect 20-byte STUN Header
+            raw.extend_from_slice(&[0x00, 0x01]); // 1. STUN Binding Request
+            raw.extend_from_slice(&(body.len() as u16).to_be_bytes()); // 2. Length of encrypted data
+            raw.extend_from_slice(&[0x21, 0x12, 0xA4, 0x42]); // 3. Magic Cookie
+            
+            // 4. Transaction ID (12 bytes): We embed seq, ack, and 4 random bytes
             raw.extend_from_slice(&seq.to_be_bytes());
             raw.extend_from_slice(&ack.to_be_bytes());
-            raw.extend_from_slice(payload);
+            let mut rand_tx = [0u8; 4];
+            rng.fill(&mut rand_tx);
+            raw.extend_from_slice(&rand_tx);
             
-            // Bulk random padding generation
-            let old_len = raw.len();
-            raw.resize(old_len + padding_len, 0);
-            rng.fill(&mut raw[old_len..]);
+            // 5. Append encrypted body
+            raw.extend_from_slice(&body);
             return raw;
         }
 
@@ -494,17 +512,30 @@ impl UdpVirtualStreamInner {
 
     fn deframe_packet(&self, raw: &[u8]) -> Option<(u8, u32, u32, Vec<u8>)> {
         if self.mode == UdpMode::Halo {
-            if raw.len() < 16 {
+            if raw.len() < 20 {
                 return None;
             }
-            let pkt_type = raw[1];
-            let payload_len = u16::from_be_bytes([raw[2], raw[3]]) as usize;
+            let msg_len = u16::from_be_bytes([raw[2], raw[3]]) as usize;
+            if raw.len() < 20 + msg_len {
+                return None;
+            }
             let seq = u32::from_be_bytes([raw[8], raw[9], raw[10], raw[11]]);
             let ack = u32::from_be_bytes([raw[12], raw[13], raw[14], raw[15]]);
-            if raw.len() < 16 + payload_len {
+            
+            // Decrypt the payload portion
+            let mut decrypted = raw[20..20 + msg_len].to_vec();
+            self.crypt_buffer(&mut decrypted, seq);
+            
+            if decrypted.len() < 3 {
                 return None;
             }
-            let payload = raw[16..16 + payload_len].to_vec();
+            let pkt_type = decrypted[0];
+            let payload_len = u16::from_be_bytes([decrypted[1], decrypted[2]]) as usize;
+            if decrypted.len() < 3 + payload_len {
+                return None;
+            }
+            let payload = decrypted[3..3 + payload_len].to_vec();
+            
             return Some((pkt_type, seq, ack, payload));
         }
 
@@ -1028,8 +1059,7 @@ impl UdpMultiplexer {
                                 true
                             } else {
                                 match mode {
-                                    UdpMode::Halo => data.get(1).copied().map(|b| b == PKT_SYN).unwrap_or(false),
-                                    // Flash / Photon / Hysteria / Lantern: fully encrypted — accept and let handshake check decide
+                                    // Flash / Photon / Hysteria / Lantern / Halo: fully encrypted — accept and let handshake check decide
                                     _ => data.len() >= 12,
                                 }
                             };
