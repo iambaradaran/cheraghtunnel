@@ -332,14 +332,14 @@ pub async fn run_server(
                 let mut cfg = yamux::Config::default();
                 cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
                 let max_buf = if let Ok(val) = std::env::var("YAMUX_MAX_BUFFER_MB") {
-                    val.parse::<usize>().unwrap_or(1) * 1024 * 1024
+                    val.parse::<usize>().unwrap_or(16) * 1024 * 1024
                 } else {
-                    1024 * 1024
+                    16 * 1024 * 1024
                 };
                 let rx_win = if let Ok(val) = std::env::var("YAMUX_RECEIVE_WINDOW_KB") {
-                    val.parse::<u32>().unwrap_or(256) * 1024
+                    val.parse::<u32>().unwrap_or(4096) * 1024
                 } else {
-                    256 * 1024
+                    4096 * 1024
                 };
                 cfg.set_max_buffer_size(max_buf);
                 cfg.set_receive_window(rx_win);
@@ -714,14 +714,14 @@ pub async fn run_client(
                 let mut cfg = yamux::Config::default();
                 cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
                 let max_buf = if let Ok(val) = std::env::var("YAMUX_MAX_BUFFER_MB") {
-                    val.parse::<usize>().unwrap_or(1) * 1024 * 1024
+                    val.parse::<usize>().unwrap_or(16) * 1024 * 1024
                 } else {
-                    1024 * 1024
+                    16 * 1024 * 1024
                 };
                 let rx_win = if let Ok(val) = std::env::var("YAMUX_RECEIVE_WINDOW_KB") {
-                    val.parse::<u32>().unwrap_or(256) * 1024
+                    val.parse::<u32>().unwrap_or(4096) * 1024
                 } else {
-                    256 * 1024
+                    4096 * 1024
                 };
                 cfg.set_max_buffer_size(max_buf);
                 cfg.set_receive_window(rx_win);
