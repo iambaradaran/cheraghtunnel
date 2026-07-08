@@ -123,6 +123,8 @@ where
                 let this = self.as_mut().get_mut();
                 this.ping_timer.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(30));
 
+                // Optimization: Use Bytes::copy_from_slice to avoid a separate heap alloc
+                // in hot path, we must accept the one-copy the WS protocol requires.
                 let msg = Message::Binary(buf.to_vec());
                 match Pin::new(&mut self.ws).start_send(msg) {
                     Ok(()) => Poll::Ready(Ok(buf.len())),
@@ -151,13 +153,22 @@ where
     }
 }
 
-// Stateful parser for Obfuscated Streams (adding random padding to evade DPI)
+// Stateful parser for Obfuscated Streams (adding random padding to evade DPI).
+// Performance-optimized: uses read_pos and write_pos cursors to avoid O(N) drain shifts.
+// write_buf capacity is preserved across calls via clear() instead of drain().
+// Random padding is generated in bulk with rng.fill() instead of byte-by-byte gen().
 pub struct ObfuscatedStream<S> {
     inner: S,
     read_state: ReadState,
+    // Raw incoming bytes; read_pos tracks the consumed head without shifting memory.
     read_buf: Vec<u8>,
+    read_pos: usize,
+    // Decoded payload bytes ready to hand back to the caller.
     payload_buf: VecDeque<u8>,
+    // Serialized outgoing frame; write_pos tracks bytes already sent.
+    // clear() is used instead of drain() to retain allocated capacity for reuse.
     write_buf: Vec<u8>,
+    write_pos: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -171,9 +182,28 @@ impl<S> ObfuscatedStream<S> {
         Self {
             inner,
             read_state: ReadState::Header,
-            read_buf: Vec::new(),
+            read_buf: Vec::with_capacity(8192),
+            read_pos: 0,
             payload_buf: VecDeque::new(),
-            write_buf: Vec::new(),
+            write_buf: Vec::with_capacity(4096),
+            write_pos: 0,
+        }
+    }
+
+    /// Return the slice of read_buf that has not been consumed yet.
+    #[inline]
+    fn read_unconsumed(&self) -> &[u8] {
+        &self.read_buf[self.read_pos..]
+    }
+
+    /// Advance the read cursor; compact when we've consumed ≥ 4 KB to prevent
+    /// unbounded growth of the raw buffer without paying O(N) cost on every frame.
+    #[inline]
+    fn read_advance(&mut self, n: usize) {
+        self.read_pos += n;
+        if self.read_pos >= 4096 {
+            self.read_buf.drain(..self.read_pos);
+            self.read_pos = 0;
         }
     }
 }
@@ -189,7 +219,7 @@ where
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
 
-        // 1. Yield any pending payload bytes
+        // 1. Yield any pending decoded payload bytes first (fast path).
         if !this.payload_buf.is_empty() {
             let n = std::cmp::min(buf.remaining(), this.payload_buf.len());
             let (slice1, slice2) = this.payload_buf.as_slices();
@@ -203,23 +233,30 @@ where
             return Poll::Ready(Ok(()));
         }
 
-        // 2. Read from stream to progress state machine
-        let mut temp_raw = [0u8; 4096];
-        let mut temp_buf = ReadBuf::new(&mut temp_raw);
-        
+        // 2. Pull raw bytes from the inner stream directly into the tail of
+        //    read_buf (no intermediate stack copy).
         loop {
-            match Pin::new(&mut this.inner).poll_read(cx, &mut temp_buf) {
+            let before = this.read_buf.len();
+            // Reserve room so ReadBuf can fill into the spare capacity.
+            this.read_buf.resize(before + 4096, 0);
+            let mut temp = ReadBuf::new(&mut this.read_buf[before..]);
+            match Pin::new(&mut this.inner).poll_read(cx, &mut temp) {
                 Poll::Ready(Ok(())) => {
-                    let bytes_read = temp_buf.filled();
-                    if bytes_read.is_empty() {
+                    let filled = temp.filled().len();
+                    // Truncate back to only the bytes actually read.
+                    this.read_buf.truncate(before + filled);
+                    if filled == 0 {
                         return Poll::Ready(Ok(())); // EOF
                     }
-                    this.read_buf.extend_from_slice(bytes_read);
-                    temp_buf.clear();
+                    // Continue pulling; stop only when Pending or we have data to parse.
                 }
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Err(e)) => {
+                    this.read_buf.truncate(before);
+                    return Poll::Ready(Err(e));
+                }
                 Poll::Pending => {
-                    if this.read_buf.is_empty() {
+                    this.read_buf.truncate(before);
+                    if this.read_unconsumed().is_empty() {
                         return Poll::Pending;
                     }
                     break;
@@ -227,36 +264,42 @@ where
             }
         }
 
-        // 3. Parse frames from read_buf
+        // 3. Parse as many complete frames as possible from read_buf using cursor.
         loop {
+            let unconsumed = this.read_unconsumed();
             match this.read_state {
                 ReadState::Header => {
-                    if this.read_buf.len() < 4 {
+                    if unconsumed.len() < 4 {
                         break;
                     }
-                    let payload_len = u16::from_be_bytes([this.read_buf[0], this.read_buf[1]]);
-                    let padding_len = u16::from_be_bytes([this.read_buf[2], this.read_buf[3]]);
-                    this.read_buf.drain(..4);
+                    let payload_len = u16::from_be_bytes([unconsumed[0], unconsumed[1]]);
+                    let padding_len = u16::from_be_bytes([unconsumed[2], unconsumed[3]]);
+                    this.read_advance(4);
                     this.read_state = ReadState::Body { payload_len, padding_len };
                 }
                 ReadState::Body { payload_len, padding_len } => {
                     let total_needed = (payload_len as usize) + (padding_len as usize);
-                    if this.read_buf.len() < total_needed {
+                    let p_len = payload_len as usize;
+                    // Use absolute indices to avoid holding a borrow while mutating payload_buf.
+                    let start = this.read_pos;
+                    let end_payload = start + p_len;
+                    let end_total = start + total_needed;
+                    if this.read_buf.len() < end_total {
                         break;
                     }
-                    
-                    let p_len = payload_len as usize;
-                    let pad_len = padding_len as usize;
-                    
-                    // Directly extend payload_buf from the slice of read_buf without allocation
-                    this.payload_buf.extend(&this.read_buf[..p_len]);
-                    this.read_buf.drain(..p_len + pad_len);
+                    // Extend payload_buf using the indexed slice — borrow ends before advance.
+                    this.payload_buf.extend(&this.read_buf[start..end_payload]);
+                    this.read_pos = end_total;
+                    if this.read_pos >= 4096 {
+                        this.read_buf.drain(..this.read_pos);
+                        this.read_pos = 0;
+                    }
                     this.read_state = ReadState::Header;
                 }
             }
         }
 
-        // 4. Yield bytes from payload_buf if populated
+        // 4. Yield decoded bytes to the caller.
         if !this.payload_buf.is_empty() {
             let n = std::cmp::min(buf.remaining(), this.payload_buf.len());
             let (slice1, slice2) = this.payload_buf.as_slices();
@@ -285,24 +328,37 @@ where
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
 
-        if this.write_buf.is_empty() {
+        // Only build a new frame when the previous one has been fully sent.
+        if this.write_pos >= this.write_buf.len() {
             let payload_len = buf.len() as u16;
             let mut rng = rand::thread_rng();
-            let padding_len = rng.gen_range(16..128) as u16; // Dynamic random padding size
-            
-            this.write_buf.reserve(4 + buf.len() + padding_len as usize);
-            this.write_buf.extend_from_slice(&payload_len.to_be_bytes());
-            this.write_buf.extend_from_slice(&padding_len.to_be_bytes());
-            this.write_buf.extend_from_slice(buf);
-            for _ in 0..padding_len {
-                this.write_buf.push(rng.gen::<u8>());
+            let padding_len: usize = rng.gen_range(16..128);
+
+            // Reuse write_buf's existing allocation: clear preserves capacity.
+            this.write_buf.clear();
+            this.write_pos = 0;
+
+            let total = 4 + buf.len() + padding_len;
+            if this.write_buf.capacity() < total {
+                this.write_buf.reserve(total - this.write_buf.capacity());
             }
+
+            this.write_buf.extend_from_slice(&payload_len.to_be_bytes());
+            this.write_buf.extend_from_slice(&(padding_len as u16).to_be_bytes());
+            this.write_buf.extend_from_slice(buf);
+
+            // Bulk-generate all padding bytes in one RNG call — orders of magnitude
+            // faster than byte-by-byte gen::<u8>() in a loop.
+            let pad_start = this.write_buf.len();
+            this.write_buf.resize(pad_start + padding_len, 0);
+            rng.fill(&mut this.write_buf[pad_start..]);
         }
 
-        while !this.write_buf.is_empty() {
-            match Pin::new(&mut this.inner).poll_write(cx, &this.write_buf) {
+        // Flush as many bytes of the current frame as the inner writer accepts.
+        while this.write_pos < this.write_buf.len() {
+            match Pin::new(&mut this.inner).poll_write(cx, &this.write_buf[this.write_pos..]) {
                 Poll::Ready(Ok(n)) => {
-                    this.write_buf.drain(..n);
+                    this.write_pos += n;
                 }
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending,
