@@ -650,7 +650,6 @@ fn get_client_tls_config() -> Arc<rustls::ClientConfig> {
 }
 
 // Handshake verification constants
-const PSK_HEADER_PREFIX: &str = "Cheragh-Auth ";
 
 fn is_older(client: &str, server: &str) -> bool {
     let c_parts: Vec<u32> = client.split('.').map(|s| s.parse().unwrap_or(0)).collect();
@@ -675,7 +674,27 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let auth = format!("Cheragh-Auth {} v{}\n", token, env!("CARGO_PKG_VERSION"));
+    use sha2::{Sha256, Digest};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use rand::Rng;
+
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let hash = format!("{:x}", Sha256::digest(format!("{}{}", token, timestamp).as_bytes()));
+    
+    // Generate 10 to 150 bytes of random alphanumeric padding to evade size-based DPI fingerprinting
+    let padding: String = {
+        let mut rng = rand::thread_rng();
+        let pad_len = rng.gen_range(10..150);
+        (0..pad_len)
+            .map(|_| {
+                let idx = rng.gen_range(0..62);
+                let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+                chars[idx] as char
+            })
+            .collect()
+    };
+
+    let auth = format!("Cheragh-Auth-HMAC {} {} v{} {}\n", hash, timestamp, env!("CARGO_PKG_VERSION"), padding);
     stream.write_all(auth.as_bytes()).await?;
     stream.flush().await?;
     
@@ -720,6 +739,9 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use sha2::{Sha256, Digest};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -728,30 +750,48 @@ where
             break;
         }
         buf.push(byte[0]);
-        if buf.len() > 200 {
+        if buf.len() > 400 { // Max limit increased to support the random padding
             return Err("Handshake too long".into());
         }
     }
     let auth = String::from_utf8_lossy(&buf);
-    let expected_prefix = format!("Cheragh-Auth {}", token);
-    if !auth.starts_with(&expected_prefix) {
-        return Err("Authentication failed".into());
+    if !auth.starts_with("Cheragh-Auth-HMAC ") {
+        return Err("Authentication failed: invalid prefix".into());
     }
     
     let parts: Vec<&str> = auth.split_whitespace().collect();
-    if parts.len() >= 3 {
-        let client_ver = parts[2].trim_start_matches('v');
-        let server_ver = env!("CARGO_PKG_VERSION");
-        if is_older(client_ver, server_ver) {
-            if let Ok(exe_path) = std::env::current_exe() {
-                if let Ok(exe_bytes) = std::fs::read(exe_path) {
-                    stream.write_all(b"UPG").await?;
-                    stream.write_all(b"RADE\n").await?;
-                    stream.write_all(&(exe_bytes.len() as u32).to_be_bytes()).await?;
-                    stream.write_all(&exe_bytes).await?;
-                    stream.flush().await?;
-                    return Err("Client upgrade triggered".into());
-                }
+    if parts.len() < 4 {
+        return Err("Malformed authentication header".into());
+    }
+
+    let client_hash = parts[1];
+    let client_time_str = parts[2];
+    let client_ver = parts[3].trim_start_matches('v');
+
+    // Parse and verify client timestamp (within 60 seconds)
+    let client_time = client_time_str.parse::<u64>().map_err(|_| "Invalid timestamp format")?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let diff = (now as i64 - client_time as i64).abs();
+    if diff > 60 {
+        return Err(format!("Authentication expired. Clock skew: {} seconds", diff).into());
+    }
+
+    // Verify expected hash SHA256(token + client_time)
+    let expected_hash = format!("{:x}", Sha256::digest(format!("{}{}", token, client_time).as_bytes()));
+    if client_hash != expected_hash {
+        return Err("Authentication failed: invalid signature".into());
+    }
+    
+    let server_ver = env!("CARGO_PKG_VERSION");
+    if is_older(client_ver, server_ver) {
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Ok(exe_bytes) = std::fs::read(exe_path) {
+                stream.write_all(b"UPG").await?;
+                stream.write_all(b"RADE\n").await?;
+                stream.write_all(&(exe_bytes.len() as u32).to_be_bytes()).await?;
+                stream.write_all(&exe_bytes).await?;
+                stream.flush().await?;
+                return Err("Client upgrade triggered".into());
             }
         }
     }
@@ -859,13 +899,17 @@ pub async fn client_handshake(
             Ok(TransportStream::Tcp(socket))
         }
         "aura" | "httpmux" => {
+            use sha2::{Sha256, Digest};
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+            let hash = format!("{:x}", Sha256::digest(format!("{}{}", token, timestamp).as_bytes()));
             let req = format!(
                 "GET /tunnel HTTP/1.1\r\n\
                  Host: {}\r\n\
                  Upgrade: websocket\r\n\
                  Connection: Upgrade\r\n\
-                 Authorization: {}{}\r\n\r\n",
-                 decoy_str, PSK_HEADER_PREFIX, token
+                 Cookie: __cf_session_id={}-{}\r\n\r\n",
+                 decoy_str, hash, timestamp
             );
             socket.write_all(req.as_bytes()).await?;
             socket.flush().await?;
@@ -1001,7 +1045,6 @@ pub async fn server_handshake(
     decoy: Option<String>,
 ) -> Result<TransportStream, Box<dyn Error + Send + Sync>> {
     let _ = crate::common::network::optimize_socket(&socket);
-    let expected = format!("{}{}", PSK_HEADER_PREFIX, token);
 
     match protocol {
         "beam" | "tcpmux" | "photon" | "quantummux" => {
@@ -1009,13 +1052,65 @@ pub async fn server_handshake(
             Ok(TransportStream::Tcp(socket))
         }
         "aura" | "httpmux" => {
-            let mut buf = [0u8; 1024];
-            let n = socket.read(&mut buf).await?;
-            let req_str = String::from_utf8_lossy(&buf[..n]);
-            if !req_str.contains(&expected) {
+            use tokio::io::AsyncReadExt;
+            let mut header_buf = Vec::new();
+            let mut temp = [0u8; 1];
+            loop {
+                socket.read_exact(&mut temp).await?;
+                header_buf.push(temp[0]);
+                if header_buf.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+                if header_buf.len() > 4096 {
+                    return Err("HTTP header limit exceeded".into());
+                }
+            }
+            let req_str = String::from_utf8_lossy(&header_buf);
+
+            // Parse Cookie: __cf_session_id=<hash>-<timestamp>
+            let mut authenticated = false;
+            let mut client_hash = "";
+            let mut client_time_str = "";
+            
+            for line in req_str.lines() {
+                let line_lower = line.to_lowercase();
+                if line_lower.starts_with("cookie:") {
+                    if let Some(cookie_val) = line.split(':').nth(1) {
+                        for cookie in cookie_val.split(';') {
+                            let parts: Vec<&str> = cookie.trim().split('=').collect();
+                            if parts.len() == 2 && parts[0] == "__cf_session_id" {
+                                let val_parts: Vec<&str> = parts[1].split('-').collect();
+                                if val_parts.len() == 2 {
+                                    client_hash = val_parts[0];
+                                    client_time_str = val_parts[1];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !client_hash.is_empty() && !client_time_str.is_empty() {
+                if let Ok(client_time) = client_time_str.parse::<u64>() {
+                    use std::time::{SystemTime, UNIX_EPOCH};
+                    if let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) {
+                        let diff = (now.as_secs() as i64 - client_time as i64).abs();
+                        if diff <= 60 {
+                            use sha2::{Sha256, Digest};
+                            let expected_hash = format!("{:x}", Sha256::digest(format!("{}{}", token, client_time).as_bytes()));
+                            if client_hash == expected_hash {
+                                authenticated = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !authenticated {
                 send_decoy_response(&mut socket, decoy).await?;
                 return Err("HTTP upgrade auth failed, decoy served".into());
             }
+
             let resp = "HTTP/1.1 101 Switching Protocols\r\n\
                         Upgrade: websocket\r\n\
                         Connection: Upgrade\r\n\r\n";

@@ -331,8 +331,18 @@ pub async fn run_server(
                 println!("[SERVER] Establishing Yamux session for new client node in pool...");
                 let mut cfg = yamux::Config::default();
                 cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
-                cfg.set_max_buffer_size(1024 * 1024 * 4);
-                cfg.set_receive_window(1024 * 1024);
+                let max_buf = if let Ok(val) = std::env::var("YAMUX_MAX_BUFFER_MB") {
+                    val.parse::<usize>().unwrap_or(1) * 1024 * 1024
+                } else {
+                    1024 * 1024
+                };
+                let rx_win = if let Ok(val) = std::env::var("YAMUX_RECEIVE_WINDOW_KB") {
+                    val.parse::<u32>().unwrap_or(256) * 1024
+                } else {
+                    256 * 1024
+                };
+                cfg.set_max_buffer_size(max_buf);
+                cfg.set_receive_window(rx_win);
                 
                 let conn = yamux::Connection::new(control_socket.compat(), cfg, yamux::Mode::Client);
                 let ctrl = conn.control();
@@ -687,8 +697,18 @@ pub async fn run_client(
 
                 let mut cfg = yamux::Config::default();
                 cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
-                cfg.set_max_buffer_size(1024 * 1024 * 4);
-                cfg.set_receive_window(1024 * 1024);
+                let max_buf = if let Ok(val) = std::env::var("YAMUX_MAX_BUFFER_MB") {
+                    val.parse::<usize>().unwrap_or(1) * 1024 * 1024
+                } else {
+                    1024 * 1024
+                };
+                let rx_win = if let Ok(val) = std::env::var("YAMUX_RECEIVE_WINDOW_KB") {
+                    val.parse::<u32>().unwrap_or(256) * 1024
+                } else {
+                    256 * 1024
+                };
+                cfg.set_max_buffer_size(max_buf);
+                cfg.set_receive_window(rx_win);
                 let conn = yamux::Connection::new(control_socket.compat(), cfg, yamux::Mode::Server);
                 let mut incoming = Box::pin(yamux::into_stream(conn));
 
