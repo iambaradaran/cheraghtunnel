@@ -86,7 +86,12 @@ impl FecEncoder {
     }
 
     fn add_packet(&mut self, data: &[u8]) -> Option<Vec<u8>> {
-        self.buffer.push(data.to_vec());
+        // Prepend 2-byte big-endian length to avoid data corruption on variable-sized payloads
+        let mut pkt_with_len = Vec::with_capacity(2 + data.len());
+        pkt_with_len.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        pkt_with_len.extend_from_slice(data);
+
+        self.buffer.push(pkt_with_len);
         self.packet_counter += 1;
         if self.packet_counter >= 4 {
             let max_len = self.buffer.iter().map(|v| v.len()).max().unwrap_or(0);
@@ -119,7 +124,18 @@ impl FecDecoder {
     }
 
     fn add_and_recover(&mut self, seq: u32, data: &[u8]) -> Option<(u32, Vec<u8>)> {
-        self.buffer.insert(seq, data.to_vec());
+        // For parity packets (seq % 5 == 4), the 2-byte length metadata is already XORed.
+        // For data packets, we must format it by prepending the 2-byte payload length.
+        let formatted = if seq % 5 == 4 {
+            data.to_vec()
+        } else {
+            let mut buf = Vec::with_capacity(2 + data.len());
+            buf.extend_from_slice(&(data.len() as u16).to_be_bytes());
+            buf.extend_from_slice(data);
+            buf
+        };
+
+        self.buffer.insert(seq, formatted);
         let block_start = (seq / 5) * 5;
         let mut present = Vec::new();
         let mut missing = Vec::new();
@@ -134,18 +150,36 @@ impl FecDecoder {
 
         if missing.len() == 1 {
             let missing_seq = missing[0];
+            // Recovering the parity packet itself is useless, we only want to recover data packets
+            if missing_seq % 5 == 4 {
+                return None;
+            }
+
             let max_len = present.iter().map(|s| self.buffer.get(s).unwrap().len()).max().unwrap_or(0);
-            let mut recovered = vec![0u8; max_len];
+            let mut recovered_raw = vec![0u8; max_len];
             for s in &present {
                 let pkt = self.buffer.get(s).unwrap();
                 for (i, &b) in pkt.iter().enumerate() {
-                    if i < recovered.len() {
-                        recovered[i] ^= b;
+                    if i < recovered_raw.len() {
+                        recovered_raw[i] ^= b;
                     }
                 }
             }
-            self.buffer.insert(missing_seq, recovered.clone());
-            Some((missing_seq, recovered))
+
+            if recovered_raw.len() < 2 {
+                return None;
+            }
+
+            // Extract the original length from the first 2 bytes and truncate padding junk
+            let original_len = u16::from_be_bytes([recovered_raw[0], recovered_raw[1]]) as usize;
+            if recovered_raw.len() < 2 + original_len {
+                return None;
+            }
+            let recovered_payload = recovered_raw[2..2 + original_len].to_vec();
+
+            // Insert recovered raw packet into buffer for potential future recoveries
+            self.buffer.insert(missing_seq, recovered_raw);
+            Some((missing_seq, recovered_payload))
         } else {
             None
         }
@@ -223,11 +257,11 @@ impl UdpVirtualStream {
             handshake_done,
             rx_buf: VecDeque::new(),
             rx_waker: None,
-            next_expected_seq: 1,
+            next_expected_seq: 0,
             rx_out_of_order: HashMap::new(),
             fec_decoder: FecDecoder::new(),
             tx_waker: None,
-            next_seq: 1,
+            next_seq: 0,
             last_acked_seq: 0,
             unacked_packets: VecDeque::new(),
             fec_encoder: FecEncoder::new(),
@@ -526,12 +560,28 @@ impl UdpVirtualStreamInner {
                 }
 
                 if seq == self.next_expected_seq {
+                    // Feed to fec_decoder first (for Photon mode) to avoid decoder starvation
+                    if self.mode == UdpMode::Photon {
+                        self.fec_decoder.clean_old(seq);
+                        let _ = self.fec_decoder.add_and_recover(seq, &payload);
+                    }
+
                     self.rx_buf.extend(&payload);
                     self.next_expected_seq += 1;
+                    if self.mode == UdpMode::Photon {
+                        while self.next_expected_seq % 5 == 4 {
+                            self.next_expected_seq += 1;
+                        }
+                    }
 
                     while let Some(buffered) = self.rx_out_of_order.remove(&self.next_expected_seq) {
                         self.rx_buf.extend(&buffered);
                         self.next_expected_seq += 1;
+                        if self.mode == UdpMode::Photon {
+                            while self.next_expected_seq % 5 == 4 {
+                                self.next_expected_seq += 1;
+                            }
+                        }
                     }
 
                     self.send_ack().await;
@@ -539,25 +589,59 @@ impl UdpVirtualStreamInner {
                         w.wake();
                     }
                 } else if seq < self.next_expected_seq + 64 {
-                    self.rx_out_of_order.insert(seq, payload.clone());
-                    
                     if self.mode == UdpMode::Photon {
                         self.fec_decoder.clean_old(seq);
-                        if let Some((recovered_seq, recovered_data)) = self.fec_decoder.add_and_recover(seq, &payload) {
-                            if recovered_seq == self.next_expected_seq {
-                                self.rx_buf.extend(&recovered_data);
-                                self.next_expected_seq += 1;
-                                while let Some(buffered) = self.rx_out_of_order.remove(&self.next_expected_seq) {
-                                    self.rx_buf.extend(&buffered);
+                        if seq % 5 == 4 {
+                            // Parity packet: feed to fec_decoder only, do NOT add to rx_out_of_order
+                            if let Some((recovered_seq, recovered_data)) = self.fec_decoder.add_and_recover(seq, &payload) {
+                                if recovered_seq == self.next_expected_seq {
+                                    self.rx_buf.extend(&recovered_data);
                                     self.next_expected_seq += 1;
+                                    while self.next_expected_seq % 5 == 4 {
+                                        self.next_expected_seq += 1;
+                                    }
+                                    while let Some(buffered) = self.rx_out_of_order.remove(&self.next_expected_seq) {
+                                        self.rx_buf.extend(&buffered);
+                                        self.next_expected_seq += 1;
+                                        while self.next_expected_seq % 5 == 4 {
+                                            self.next_expected_seq += 1;
+                                        }
+                                    }
+                                    if let Some(w) = self.rx_waker.take() {
+                                        w.wake();
+                                    }
+                                } else {
+                                    self.rx_out_of_order.insert(recovered_seq, recovered_data);
                                 }
-                                if let Some(w) = self.rx_waker.take() {
-                                    w.wake();
+                            }
+                        } else {
+                            // Data packet: insert to rx_out_of_order and feed to fec_decoder
+                            self.rx_out_of_order.insert(seq, payload.clone());
+                            if let Some((recovered_seq, recovered_data)) = self.fec_decoder.add_and_recover(seq, &payload) {
+                                if recovered_seq == self.next_expected_seq {
+                                    self.rx_buf.extend(&recovered_data);
+                                    self.next_expected_seq += 1;
+                                    while self.next_expected_seq % 5 == 4 {
+                                        self.next_expected_seq += 1;
+                                    }
+                                    while let Some(buffered) = self.rx_out_of_order.remove(&self.next_expected_seq) {
+                                        self.rx_buf.extend(&buffered);
+                                        self.next_expected_seq += 1;
+                                        while self.next_expected_seq % 5 == 4 {
+                                            self.next_expected_seq += 1;
+                                        }
+                                    }
+                                    if let Some(w) = self.rx_waker.take() {
+                                        w.wake();
+                                    }
+                                } else {
+                                    self.rx_out_of_order.insert(recovered_seq, recovered_data);
                                 }
-                            } else {
-                                self.rx_out_of_order.insert(recovered_seq, recovered_data);
                             }
                         }
+                    } else {
+                        // Non-Photon mode: regular out-of-order data packet
+                        self.rx_out_of_order.insert(seq, payload.clone());
                     }
                     self.send_ack().await;
                 }
@@ -576,7 +660,12 @@ impl UdpVirtualStreamInner {
     }
 
     async fn send_ack(&mut self) {
-        let ack_pkt = self.frame_packet(PKT_ACK, 0, self.next_expected_seq - 1, &[]);
+        let ack_val = if self.next_expected_seq == 0 {
+            0
+        } else {
+            self.next_expected_seq - 1
+        };
+        let ack_pkt = self.frame_packet(PKT_ACK, 0, ack_val, &[]);
         let _ = send_msg(&self.socket, &ack_pkt, self.peer).await;
     }
 
@@ -658,7 +747,13 @@ impl AsyncWrite for UdpVirtualStream {
         let seq = inner.next_seq;
         inner.next_seq += 1;
 
-        let framed = inner.frame_packet(PKT_DATA, seq, inner.next_expected_seq - 1, buf);
+        let ack_val = if inner.next_expected_seq == 0 {
+            0
+        } else {
+            inner.next_expected_seq - 1
+        };
+
+        let framed = inner.frame_packet(PKT_DATA, seq, ack_val, buf);
         let socket = inner.socket.clone();
         let peer = inner.peer;
         let framed_clone = framed.clone();
@@ -672,8 +767,9 @@ impl AsyncWrite for UdpVirtualStream {
 
         if inner.mode == UdpMode::Photon {
             if let Some(parity) = inner.fec_encoder.add_packet(buf) {
-                let parity_seq = seq + 1;
-                let parity_framed = inner.frame_packet(PKT_DATA, parity_seq, inner.next_expected_seq - 1, &parity);
+                let parity_seq = inner.next_seq;
+                inner.next_seq += 1;
+                let parity_framed = inner.frame_packet(PKT_DATA, parity_seq, ack_val, &parity);
                 let socket_fec = socket.clone();
                 let _ = try_send_msg(&socket_fec, &parity_framed, peer);
             }
