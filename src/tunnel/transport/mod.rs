@@ -927,11 +927,16 @@ pub async fn client_handshake(
         }
         "glimmer" | "wsmux" => {
             use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+            use sha2::{Sha256, Digest};
+            use std::time::{SystemTime, UNIX_EPOCH};
+
+            let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+            let hash = format!("{:x}", Sha256::digest(format!("{}{}", token, timestamp).as_bytes()));
             let ws_url = format!("ws://{}/ws", decoy_str);
             let mut request = ws_url.into_client_request()?;
             request.headers_mut().insert(
                 "Sec-WebSocket-Protocol",
-                format!("tunnel, {}", token).parse().unwrap(),
+                format!("tunnel, {}, {}", hash, timestamp).parse().unwrap(),
             );
             let (ws_stream, _) = tokio_tungstenite::client_async_with_config(
                 request,
@@ -957,11 +962,16 @@ pub async fn client_handshake(
             let tls_stream = connector.connect(domain, socket).await?;
             
             use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+            use sha2::{Sha256, Digest};
+            use std::time::{SystemTime, UNIX_EPOCH};
+
+            let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+            let hash = format!("{:x}", Sha256::digest(format!("{}{}", token, timestamp).as_bytes()));
             let ws_url = format!("wss://{}/wss", decoy_str);
             let mut request = ws_url.into_client_request()?;
             request.headers_mut().insert(
                 "Sec-WebSocket-Protocol",
-                format!("tunnel, {}", token).parse().unwrap(),
+                format!("tunnel, {}, {}", hash, timestamp).parse().unwrap(),
             );
             let (ws_stream, _) = tokio_tungstenite::client_async_with_config(
                 request,
@@ -994,45 +1004,90 @@ pub async fn client_handshake(
 
 fn make_ws_auth_callback(
     token: String,
-    decoy_str: String,
+    _decoy_str: String,
     token_found: Arc<std::sync::atomic::AtomicBool>,
 ) -> impl FnOnce(
     &tungstenite::handshake::server::Request,
     tungstenite::handshake::server::Response,
 ) -> Result<tungstenite::handshake::server::Response, tungstenite::handshake::server::ErrorResponse> {
     move |req, mut resp| {
-        // 1. Check query parameter
+        let mut authenticated = false;
+
+        // 1. Check query parameter (sid=<hash>&ts=<timestamp>)
         if let Some(query) = req.uri().query() {
-            if query.contains(&format!("token={}", token)) {
-                token_found.store(true, std::sync::atomic::Ordering::Relaxed);
-                return Ok(resp);
+            let mut q_hash = "";
+            let mut q_ts = "";
+            for part in query.split('&') {
+                let kv: Vec<&str> = part.split('=').collect();
+                if kv.len() == 2 {
+                    if kv[0] == "sid" {
+                        q_hash = kv[1];
+                    } else if kv[0] == "ts" {
+                        q_ts = kv[1];
+                    }
+                }
+            }
+            if !q_hash.is_empty() && !q_ts.is_empty() {
+                if let Ok(ts_val) = q_ts.parse::<u64>() {
+                    use std::time::{SystemTime, UNIX_EPOCH};
+                    if let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) {
+                        if (now.as_secs() as i64 - ts_val as i64).abs() <= 60 {
+                            use sha2::{Sha256, Digest};
+                            let expected = format!("{:x}", Sha256::digest(format!("{}{}", token, ts_val).as_bytes()));
+                            if q_hash == expected {
+                                authenticated = true;
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        // 2. Check Sec-WebSocket-Protocol header
-        if let Some(proto) = req.headers().get("Sec-WebSocket-Protocol").and_then(|v| v.to_str().ok()) {
-            if proto.contains(&token) {
-                token_found.store(true, std::sync::atomic::Ordering::Relaxed);
-                resp.headers_mut().insert(
-                    "Sec-WebSocket-Protocol",
-                    proto.parse().unwrap(),
-                );
-                return Ok(resp);
+        // 2. Check Sec-WebSocket-Protocol header (tunnel, <hash>, <timestamp>)
+        if !authenticated {
+            if let Some(proto) = req.headers().get("Sec-WebSocket-Protocol").and_then(|v| v.to_str().ok()) {
+                let parts: Vec<&str> = proto.split(',').map(|s| s.trim()).collect();
+                if parts.len() == 3 && parts[0] == "tunnel" {
+                    let client_hash = parts[1];
+                    let client_time_str = parts[2];
+                    if let Ok(client_time) = client_time_str.parse::<u64>() {
+                        use std::time::{SystemTime, UNIX_EPOCH};
+                        if let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) {
+                            if (now.as_secs() as i64 - client_time as i64).abs() <= 60 {
+                                use sha2::{Sha256, Digest};
+                                let expected = format!("{:x}", Sha256::digest(format!("{}{}", token, client_time).as_bytes()));
+                                if client_hash == expected {
+                                    authenticated = true;
+                                    resp.headers_mut().insert(
+                                        "Sec-WebSocket-Protocol",
+                                        proto.parse().unwrap(),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        let redirect_url = if decoy_str.starts_with("http://") || decoy_str.starts_with("https://") {
-            decoy_str
+        if authenticated {
+            token_found.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(resp)
         } else {
-            format!("https://{}", decoy_str)
-        };
-
-        Err(tungstenite::http::Response::builder()
-            .status(302)
-            .header("Location", redirect_url)
-            .header("Connection", "close")
-            .body(Some("".to_string()))
-            .unwrap())
+            let nginx_404_body = "<html>\r\n\
+                                  <head><title>404 Not Found</title></head>\r\n\
+                                  <body>\r\n\
+                                  <center><h1>404 Not Found</h1></center>\r\n\
+                                  <hr><center>nginx</center>\r\n\
+                                  </body>\r\n\
+                                  </html>";
+            Err(tungstenite::http::Response::builder()
+                .status(404)
+                .header("Content-Type", "text/html; charset=utf-8")
+                .header("Connection", "close")
+                .body(Some(nginx_404_body.to_string()))
+                .unwrap())
+        }
     }
 }
 
