@@ -658,6 +658,22 @@ pub async fn run_client(
                             ip_index += 1;
                             continue;
                         }
+                    } else {
+                        // Ray: send the 4-byte SHA256(token) magic prefix to open the server session.
+                        use sha2::{Sha256, Digest};
+                        let key = Sha256::digest(token_clone.as_bytes());
+                        let magic = &key[..4];
+                        if let Err(e) = socket.send(magic).await {
+                            eprintln!("[CLIENT-WORKER-{}] Ray magic handshake send failed: {}", worker_id, e);
+                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                            ip_index += 1;
+                            continue;
+                        }
+                        // Mark client handshake done immediately so that server reply packets
+                        // (arriving via recv_handle) flow through process_packet into rx_buf.
+                        stream.inner.lock().await.handshake_done = true;
+                        // Brief wait for the server to process the magic and open the session.
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                     }
 
                     TransportStream::Udp(stream)

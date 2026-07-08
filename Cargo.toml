@@ -1,6 +1,6 @@
 [package]
 name = "cheraghtunnel"
-version = "1.12.31"
+version = "1.12.32"
 edition = "2021"
 authors = ["Antigravity Partner"]
 

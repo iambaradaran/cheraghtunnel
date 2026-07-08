@@ -562,6 +562,18 @@ impl UdpVirtualStreamInner {
 
     async fn process_packet(&mut self, raw: &[u8]) {
         if self.mode == UdpMode::Ray {
+            if !self.handshake_done {
+                // First packet for a Ray session must be the 4-byte magic token prefix.
+                // Server verifies this before routing any data to rx_buf.
+                // Client sets handshake_done=true immediately after sending magic,
+                // so server replies flow to rx_buf on client side too.
+                let key = self.derive_key();
+                if raw.len() >= 4 && raw[..4] == key[..4] {
+                    self.handshake_done = true;
+                }
+                // Do NOT forward the magic handshake packet to rx_buf.
+                return;
+            }
             self.rx_buf.extend(raw);
             if let Some(w) = self.rx_waker.take() {
                 w.wake();
@@ -952,6 +964,9 @@ impl UdpMultiplexer {
                             // directly — instead we accept any first packet and let the handshake check
                             // reject illegitimate clients.
                             let is_syn = if mode == UdpMode::Ray {
+                                // Ray sessions are opened on any first packet from a new peer.
+                                // Authentication is enforced in process_packet: no data reaches
+                                // rx_buf until the 4-byte SHA256(token) magic prefix is verified.
                                 true
                             } else {
                                 match mode {

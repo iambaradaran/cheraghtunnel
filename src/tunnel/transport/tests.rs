@@ -54,7 +54,25 @@ async fn run_handshake_test(protocol: &'static str, is_udp: bool) {
             });
 
             let peer_addr: std::net::SocketAddr = server_addr.parse().unwrap();
+
+            // Ray: send the magic 4-byte prefix BEFORE creating the stream so
+            // UdpMultiplexer opens the session before we start reading from it.
+            if mode == udp::UdpMode::Ray {
+                use sha2::{Sha256, Digest};
+                let key = Sha256::digest(client_token.as_bytes());
+                let _ = socket.send(&key[..4]).await;
+                tokio::time::sleep(Duration::from_millis(80)).await;
+            }
+
+            let socket_arc = socket.clone(); // keep for Ray magic send
             let mut stream = udp::UdpVirtualStream::new(socket, peer_addr, mode, rx, false, &client_token);
+
+            // For Ray: mark client handshake done immediately after magic send.
+            // Server verifies the magic in process_packet; client only needs handshake_done=true
+            // so that server reply packets (coming via recv_handle) flow into rx_buf.
+            if mode == udp::UdpMode::Ray {
+                stream.inner.lock().await.handshake_done = true;
+            }
 
             if mode != udp::UdpMode::Ray {
                 // SYN
@@ -80,6 +98,7 @@ async fn run_handshake_test(protocol: &'static str, is_udp: bool) {
                 stream.read_exact(&mut ack).await.unwrap();
                 assert_eq!(&ack, b"ACK");
             }
+            let _ = socket_arc; // keep alive
 
             let mut client_stream = TransportStream::Udp(stream);
             // Write data to server
