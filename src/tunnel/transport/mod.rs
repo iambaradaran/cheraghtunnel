@@ -801,12 +801,26 @@ where
     Ok(())
 }
 
-// Helper to construct a standard TLS 1.2 ClientHello binary packet spoofing SNI
+// Helper to construct a standard TLS 1.2 ClientHello binary packet spoofing SNI.
+// The ClientRandom field is dynamic, composed of a 4-byte big-endian timestamp
+// and a 28-byte hash of the token + timestamp, preventing replay attacks.
 fn build_tls_client_hello(decoy: &str, token: &str) -> Vec<u8> {
     use sha2::{Sha256, Digest};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as u32)
+        .unwrap_or(0);
+    
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
-    let client_random = hasher.finalize(); // 32 bytes signature
+    hasher.update(&timestamp.to_be_bytes());
+    let hash = hasher.finalize();
+    
+    let mut client_random = [0u8; 32];
+    client_random[..4].copy_from_slice(&timestamp.to_be_bytes());
+    client_random[4..32].copy_from_slice(&hash[..28]);
 
     let mut body = Vec::new();
     body.extend_from_slice(&[0x03, 0x03]); // Version: TLS 1.2
@@ -863,11 +877,12 @@ fn build_tls_client_hello(decoy: &str, token: &str) -> Vec<u8> {
     record
 }
 
+// Verifies the dynamic TLS ClientHello and enforces time-bounded token validation (max 60 seconds clock drift skew).
 fn verify_tls_client_hello(data: &[u8], token: &str) -> bool {
     if data.len() < 43 {
         return false;
     }
-    // Check TLS Handshake Record Type
+    // Check TLS Handshake Record Type and Version
     if data[0] != 0x16 || data[1] != 0x03 || data[2] != 0x01 {
         return false;
     }
@@ -876,12 +891,94 @@ fn verify_tls_client_hello(data: &[u8], token: &str) -> bool {
     }
     let client_random = &data[11..43];
     
+    // Extract timestamp
+    let mut ts_bytes = [0u8; 4];
+    ts_bytes.copy_from_slice(&client_random[..4]);
+    let timestamp = u32::from_be_bytes(ts_bytes);
+    
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let current_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as u32)
+        .unwrap_or(0);
+        
+    // Enforce 60 seconds time window to block Replay Attacks
+    if (current_time as i64 - timestamp as i64).abs() > 60 {
+        return false;
+    }
+    
     use sha2::{Sha256, Digest};
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
+    hasher.update(&timestamp.to_be_bytes());
     let expected = hasher.finalize();
     
-    client_random == expected.as_slice()
+    client_random[4..32] == expected[..28]
+}
+
+// Generates a fully valid TLS 1.2 ServerHello record to satisfy stateful DPI engines.
+fn build_tls_server_hello() -> Vec<u8> {
+    use rand::Rng;
+    let mut body = Vec::new();
+    body.extend_from_slice(&[0x03, 0x03]); // Version: TLS 1.2
+    
+    let mut server_random = [0u8; 32];
+    rand::thread_rng().fill(&mut server_random);
+    body.extend_from_slice(&server_random);
+    
+    body.push(32); // Session ID length
+    body.extend_from_slice(&[0u8; 32]); // Dummy Session ID
+    
+    // Cipher suite: TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 (0xc0, 0x2f)
+    body.extend_from_slice(&[0xc0, 0x2f]);
+    body.push(0x00); // Compression method: null
+    
+    // ALPN extension (http/1.1)
+    let mut extensions = Vec::new();
+    extensions.extend_from_slice(&[
+        0x00, 0x10, // Extension Type: ALPN
+        0x00, 0x0b, // Extension Length: 11
+        0x00, 0x09, // Protocol List Length: 9
+        0x08, // Protocol Name Length: 8
+        b'h', b't', b't', b'p', b'/', b'1', b'.', b'1'
+    ]);
+    
+    let ext_len = extensions.len() as u16;
+    body.extend_from_slice(&ext_len.to_be_bytes());
+    body.extend_from_slice(&extensions);
+    
+    let mut handshake = Vec::new();
+    handshake.push(0x02); // Handshake Type: ServerHello
+    let body_len = body.len() as u32;
+    handshake.push(((body_len >> 16) & 0xff) as u8);
+    handshake.push(((body_len >> 8) & 0xff) as u8);
+    handshake.push((body_len & 0xff) as u8);
+    handshake.extend_from_slice(&body);
+    
+    let mut record = Vec::new();
+    record.push(0x16); // Content Type: Handshake
+    record.extend_from_slice(&[0x03, 0x03]); // TLS 1.2 Version
+    let rec_len = handshake.len() as u16;
+    record.extend_from_slice(&rec_len.to_be_bytes());
+    record.extend_from_slice(&handshake);
+    
+    record
+}
+
+// Verifies if the incoming packet is a valid TLS ServerHello record.
+fn verify_tls_server_hello(data: &[u8]) -> bool {
+    if data.len() < 38 {
+        return false;
+    }
+    // Check TLS Handshake Record Type and Version (TLS 1.0 - 1.3 compat)
+    if data[0] != 0x16 || data[1] != 0x03 {
+        return false;
+    }
+    // Check Handshake Type: ServerHello (0x02)
+    if data[5] != 0x02 {
+        return false;
+    }
+    true
 }
 
 /// Client handshake logic to wrap standard TcpStream into selected transport stream
@@ -986,9 +1083,10 @@ pub async fn client_handshake(
             socket.write_all(&hello).await?;
             socket.flush().await?;
             
-            let mut resp = [0u8; 32];
-            socket.read_exact(&mut resp).await?;
-            if &resp[..12] != b"REALITY_UPGR" {
+            // Read valid TLS 1.2 ServerHello response from server
+            let mut resp = vec![0u8; 1024];
+            let n = socket.read(&mut resp).await?;
+            if !verify_tls_server_hello(&resp[..n]) {
                 return Err("Reality server validation handshake failed".into());
             }
             
@@ -1228,10 +1326,9 @@ pub async fn server_handshake(
             let n = socket.read(&mut buf).await?;
             
             if verify_tls_client_hello(&buf[..n], token) {
-                // Successful Reality connection: reply with Reality server ACK sequence
-                let mut ack = [0u8; 32];
-                ack[..12].copy_from_slice(b"REALITY_UPGR");
-                socket.write_all(&ack).await?;
+                // Successful Reality connection: reply with a standard TLS 1.2 ServerHello
+                let hello = build_tls_server_hello();
+                socket.write_all(&hello).await?;
                 socket.flush().await?;
                 
                 // Wrap in Obfuscated stream to add dynamic padding
