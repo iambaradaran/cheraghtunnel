@@ -344,6 +344,19 @@ impl UdpVirtualStreamInner {
         key
     }
 
+    /// Computes the standard internet checksum for IPv4 headers.
+    fn calculate_ip_checksum(&self, header: &[u8]) -> u16 {
+        let mut sum = 0u32;
+        for i in (0..header.len()).step_by(2) {
+            let word = u16::from_be_bytes([header[i], header[i + 1]]);
+            sum += word as u32;
+        }
+        while sum >> 16 != 0 {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        !(sum as u16)
+    }
+
     /// XOR-encrypts/decrypts `buf` in-place using a keystream derived from
     /// SHA256(key XOR seq_nonce). The nonce (4 bytes of seq) ensures every
     /// packet has a unique keystream, even if the payload is identical.
@@ -401,24 +414,61 @@ impl UdpVirtualStreamInner {
         }
 
         if self.mode == UdpMode::Lantern {
-            // Lantern (TUN Signature): IP header + [pkt_type] + [seq (4)] + [ack (4)] + [payload_len (2)] + [payload] + [padding]
-            // Calculate Total IP Packet Length
-            let total_len = (20 + 9 + 2 + payload.len() + padding_len) as u16;
-            raw.extend_from_slice(&[0x45, 0x00]);
-            raw.extend_from_slice(&total_len.to_be_bytes());
-            raw.extend_from_slice(&[0x00, 0x00, 0x40, 0x00, 0x40, 0x11, 0x00, 0x00]);
-            raw.extend_from_slice(&[10, 0, 0, 1]);
-            raw.extend_from_slice(&[10, 0, 0, 2]);
-            raw.push(pkt_type);
-            raw.extend_from_slice(&seq.to_be_bytes());
-            raw.extend_from_slice(&ack.to_be_bytes());
-            raw.extend_from_slice(&(payload.len() as u16).to_be_bytes());
-            raw.extend_from_slice(payload);
+            // Lantern (TUN/IPsec encapsulation simulation):
+            // [IPv4 Header (20 bytes)]
+            // [UDP Header (8 bytes)]
+            // [RUDP Payload (4 + encrypted_payload_len)]
+            //   - seq (4 bytes, plaintext nonce)
+            //   - encrypted[pkt_type(1) + ack(4) + payload_len(2) + payload + padding]
+            
+            // Build the unencrypted inner body first
+            let mut body = Vec::with_capacity(64 + payload.len());
+            body.push(pkt_type);
+            body.extend_from_slice(&ack.to_be_bytes());
+            body.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            body.extend_from_slice(payload);
             
             // Bulk random padding generation
-            let old_len = raw.len();
-            raw.resize(old_len + padding_len, 0);
-            rng.fill(&mut raw[old_len..]);
+            let old_len = body.len();
+            body.resize(old_len + padding_len, 0);
+            rng.fill(&mut body[old_len..]);
+            
+            // Encrypt the body using seq as nonce
+            self.crypt_buffer(&mut body, seq);
+            
+            // Now construct the full encapsulated packet
+            let encrypted_payload_len = body.len();
+            let total_ip_len = (20 + 8 + 4 + encrypted_payload_len) as u16;
+            let total_udp_len = (8 + 4 + encrypted_payload_len) as u16;
+            
+            // 20-byte IP header
+            let mut ip_hdr = vec![0u8; 20];
+            ip_hdr[0] = 0x45; // Version 4, IHL 5
+            ip_hdr[1] = 0x00; // DSCP / ECN
+            ip_hdr[2..4].copy_from_slice(&total_ip_len.to_be_bytes());
+            ip_hdr[4..6].copy_from_slice(&[0x12, 0x34]); // Identification
+            ip_hdr[6..8].copy_from_slice(&[0x40, 0x00]); // Don't Fragment flag
+            ip_hdr[8] = 64; // TTL
+            ip_hdr[9] = 17; // Protocol (UDP)
+            // Source & Destination IP addresses (simulating internal corporate subnet)
+            ip_hdr[12..16].copy_from_slice(&[10, 0, 0, 1]);
+            ip_hdr[16..20].copy_from_slice(&[10, 0, 0, 2]);
+            
+            // Calculate and write the IP checksum
+            let ip_chk = self.calculate_ip_checksum(&ip_hdr);
+            ip_hdr[10..12].copy_from_slice(&ip_chk.to_be_bytes());
+            
+            // 8-byte UDP header (mimicking IPsec NAT-T on port 4500)
+            let mut udp_hdr = vec![0u8; 8];
+            udp_hdr[0..2].copy_from_slice(&[0x11, 0x94]); // Src Port = 4500
+            udp_hdr[2..4].copy_from_slice(&[0x11, 0x94]); // Dest Port = 4500
+            udp_hdr[4..6].copy_from_slice(&total_udp_len.to_be_bytes());
+            // Checksum left as 0x0000 (valid / disabled in IPv4 UDP)
+            
+            raw.extend_from_slice(&ip_hdr);
+            raw.extend_from_slice(&udp_hdr);
+            raw.extend_from_slice(&seq.to_be_bytes()); // plaintext seq (nonce)
+            raw.extend_from_slice(&body); // encrypted body
             return raw;
         }
 
@@ -459,21 +509,29 @@ impl UdpVirtualStreamInner {
         }
 
         if self.mode == UdpMode::Lantern {
-            if raw.len() < 31 {
+            if raw.len() < 39 {
                 return None;
             }
             let total_len = u16::from_be_bytes([raw[2], raw[3]]) as usize;
             if raw.len() < total_len {
                 return None;
             }
-            let pkt_type = raw[20];
-            let seq = u32::from_be_bytes([raw[21], raw[22], raw[23], raw[24]]);
-            let ack = u32::from_be_bytes([raw[25], raw[26], raw[27], raw[28]]);
-            let payload_len = u16::from_be_bytes([raw[29], raw[30]]) as usize;
-            if raw.len() < 31 + payload_len {
+            let seq = u32::from_be_bytes([raw[28], raw[29], raw[30], raw[31]]);
+            
+            // Decrypt the payload portion
+            let mut decrypted = raw[32..].to_vec();
+            self.crypt_buffer(&mut decrypted, seq);
+            
+            if decrypted.len() < 7 {
                 return None;
             }
-            let payload = raw[31..31 + payload_len].to_vec();
+            let pkt_type = decrypted[0];
+            let ack = u32::from_be_bytes([decrypted[1], decrypted[2], decrypted[3], decrypted[4]]);
+            let payload_len = u16::from_be_bytes([decrypted[5], decrypted[6]]) as usize;
+            if decrypted.len() < 7 + payload_len {
+                return None;
+            }
+            let payload = decrypted[7..7 + payload_len].to_vec();
             return Some((pkt_type, seq, ack, payload));
         }
 
@@ -971,8 +1029,7 @@ impl UdpMultiplexer {
                             } else {
                                 match mode {
                                     UdpMode::Halo => data.get(1).copied().map(|b| b == PKT_SYN).unwrap_or(false),
-                                    UdpMode::Lantern => data.get(20).copied().map(|b| b == PKT_SYN).unwrap_or(false),
-                                    // Flash / Photon / Hysteria: fully encrypted — accept and let handshake check decide
+                                    // Flash / Photon / Hysteria / Lantern: fully encrypted — accept and let handshake check decide
                                     _ => data.len() >= 12,
                                 }
                             };
