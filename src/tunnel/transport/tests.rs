@@ -31,6 +31,8 @@ async fn run_handshake_test(protocol: &'static str, is_udp: bool) {
             "lantern" => udp::UdpMode::Lantern,
             "halo" => udp::UdpMode::Halo,
             "hysteria" => udp::UdpMode::Hysteria,
+            "oracle" => udp::UdpMode::Oracle,
+            "vortex" => udp::UdpMode::Vortex,
             _ => udp::UdpMode::Flash,
         };
         let _multiplexer = udp::UdpMultiplexer::new(server_socket, mode, new_conn_tx, token_owned.clone());
@@ -65,7 +67,7 @@ async fn run_handshake_test(protocol: &'static str, is_udp: bool) {
             }
 
             let socket_arc = socket.clone(); // keep for Ray magic send
-            let mut stream = udp::UdpVirtualStream::new(socket, peer_addr, mode, rx, false, &client_token);
+            let mut stream = udp::UdpVirtualStream::new(socket, peer_addr, mode, rx, false, false, &client_token);
 
             // For Ray: mark client handshake done immediately after magic send.
             // Server verifies the magic in process_packet; client only needs handshake_done=true
@@ -237,4 +239,14 @@ async fn test_protocol_halo() {
 #[tokio::test]
 async fn test_protocol_hysteria() {
     run_handshake_test("hysteria", true).await;
+}
+
+#[tokio::test]
+async fn test_protocol_oracle() {
+    run_handshake_test("oracle", true).await;
+}
+
+#[tokio::test]
+async fn test_protocol_vortex() {
+    run_handshake_test("vortex", true).await;
 }

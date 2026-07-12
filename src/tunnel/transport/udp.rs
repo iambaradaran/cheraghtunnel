@@ -64,6 +64,8 @@ pub enum UdpMode {
     Halo,      // Reliable UDP + WebRTC/STUN framing
     Hysteria,  // High-speed paced reliable UDP
     Lantern,   // Reliable UDP + L3/TUN IP packet framing
+    Oracle,    // Reliable UDP + DNS EDNS0 masquerading
+    Vortex,    // Reliable UDP + Source Engine Query masquerading
 }
 
 #[allow(dead_code)]
@@ -204,6 +206,7 @@ pub struct UdpVirtualStreamInner {
     rx_out_of_order: HashMap<u32, Vec<u8>>,
     fec_decoder: FecDecoder,
     token: String,
+    is_server: bool,
     
     tx_waker: Option<Waker>,
     next_seq: u32,
@@ -248,6 +251,7 @@ impl UdpVirtualStream {
         mode: UdpMode,
         rx: mpsc::Receiver<Vec<u8>>,
         handshake_done: bool,
+        is_server: bool,
         token: &str,
     ) -> Self {
         let inner = Arc::new(Mutex::new(UdpVirtualStreamInner {
@@ -255,6 +259,7 @@ impl UdpVirtualStream {
             peer,
             mode,
             handshake_done,
+            is_server,
             rx_buf: VecDeque::new(),
             rx_waker: None,
             next_expected_seq: 0,
@@ -490,6 +495,123 @@ impl UdpVirtualStreamInner {
             return raw;
         }
 
+        if self.mode == UdpMode::Oracle {
+            // Oracle (DNS EDNS0 Simulation):
+            // DNS Header (12 bytes) + Question (25 bytes) + OPT pseudo-RR (11 bytes) + Option Header (4 bytes) + [seq (4)] + [encrypted body]
+            
+            // Build the unencrypted inner body first
+            let mut body = Vec::with_capacity(64 + payload.len());
+            body.push(pkt_type);
+            body.extend_from_slice(&ack.to_be_bytes());
+            body.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            body.extend_from_slice(payload);
+            
+            // Random padding
+            let old_len = body.len();
+            body.resize(old_len + padding_len, 0);
+            rng.fill(&mut body[old_len..]);
+            
+            // Encrypt using seq as nonce
+            self.crypt_buffer(&mut body, seq);
+            
+            // Build DNS Header (12 bytes)
+            let tx_id = rng.gen::<u16>();
+            raw.extend_from_slice(&tx_id.to_be_bytes());
+            
+            if !self.is_server {
+                raw.extend_from_slice(&[0x01, 0x00]); // Flags: Standard Query
+            } else {
+                raw.extend_from_slice(&[0x81, 0x80]); // Flags: Standard Query Response
+            }
+            
+            raw.extend_from_slice(&[0x00, 0x01]); // Questions: 1
+            raw.extend_from_slice(&[0x00, 0x00]); // Answer RRs: 0
+            raw.extend_from_slice(&[0x00, 0x00]); // Authority RRs: 0
+            raw.extend_from_slice(&[0x00, 0x01]); // Additional RRs: 1 (OPT RR)
+            
+            // Build Question Section for w.www.microsoft.com (25 bytes)
+            raw.extend_from_slice(&[
+                0x01, b'w',
+                0x03, b'w', b'w', b'w',
+                0x09, b'm', b'i', b'c', b'r', b'o', b's', b'o', b'f', b't',
+                0x03, b'c', b'o', b'm',
+                0x00 // Null terminator
+            ]);
+            raw.extend_from_slice(&[0x00, 0x10]); // Type: TXT (16)
+            raw.extend_from_slice(&[0x00, 0x01]); // Class: IN (1)
+            
+            // OPT pseudo-RR (11 bytes + option header + option data)
+            raw.push(0x00); // Name: Root
+            raw.extend_from_slice(&[0x00, 0x29]); // Type: OPT (41)
+            raw.extend_from_slice(&[0x10, 0x00]); // UDP Payload Size: 4096 bytes
+            raw.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // Extended RCODE / flags
+            
+            // Data Length = 4 (Option Code + Option Length) + 4 (seq) + encrypted_body_len
+            let opt_data_len = (4 + 4 + body.len()) as u16;
+            raw.extend_from_slice(&opt_data_len.to_be_bytes());
+            
+            // Option Code & Option Length (EDNS0 custom option)
+            raw.extend_from_slice(&[0xff, 0xfe]); // Custom Option Code
+            let opt_val_len = (4 + body.len()) as u16;
+            raw.extend_from_slice(&opt_val_len.to_be_bytes());
+            
+            // OPT data value: seq + encrypted body
+            raw.extend_from_slice(&seq.to_be_bytes());
+            raw.extend_from_slice(&body);
+            
+            return raw;
+        }
+
+        if self.mode == UdpMode::Vortex {
+            // Vortex (Source Engine Game Query Simulation):
+            // Header (4 bytes 0xFFFFFFFF) + Type (1 byte 'T' or 'I') + Payload / Metadata + seq (4 bytes) + encrypted_body
+            
+            // Build the unencrypted inner body
+            let mut body = Vec::with_capacity(64 + payload.len());
+            body.push(pkt_type);
+            body.extend_from_slice(&ack.to_be_bytes());
+            body.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            body.extend_from_slice(payload);
+            
+            // Random padding
+            let old_len = body.len();
+            body.resize(old_len + padding_len, 0);
+            rng.fill(&mut body[old_len..]);
+            
+            // Encrypt using seq as nonce
+            self.crypt_buffer(&mut body, seq);
+            
+            // Prefix 4 bytes: 0xFFFFFFFF
+            raw.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+            
+            if !self.is_server {
+                // Client Request (A2S_INFO Request)
+                raw.push(0x54); // 'T'
+                raw.extend_from_slice(b"Source Engine Query\0"); // 20 bytes
+            } else {
+                // Server Response (A2S_INFO Response)
+                raw.push(0x49); // 'I'
+                raw.push(17); // Protocol version
+                raw.extend_from_slice(b"Cheragh Server\0");
+                raw.extend_from_slice(b"de_dust2\0");
+                raw.extend_from_slice(b"csgo\0");
+                raw.extend_from_slice(b"Counter-Strike\0");
+                raw.extend_from_slice(&[0x00, 0x01]); // ID: 1
+                raw.extend_from_slice(&[0, 20, 0]); // Players: 0, Max: 20, Bots: 0
+                raw.push(b'd'); // Dedicated
+                raw.push(b'l'); // Linux
+                raw.push(0); // Password: No
+                raw.push(1); // VAC: Yes
+                raw.extend_from_slice(b"1.0.0.0\0");
+                raw.push(0x80); // EDF
+            }
+            
+            // Append seq (4 bytes) and encrypted body
+            raw.extend_from_slice(&seq.to_be_bytes());
+            raw.extend_from_slice(&body);
+            return raw;
+        }
+
         // Flash / Photon / Hysteria (Encrypted Reliable UDP):
         // [seq (4, plaintext)] + encrypt_with(seq)[pkt_type(1) + ack(4) + payload_len(2) + payload + padding]
         // The seq is left in plaintext so the receiver can derive the decryption nonce.
@@ -566,6 +688,63 @@ impl UdpVirtualStreamInner {
             return Some((pkt_type, seq, ack, payload));
         }
 
+        if self.mode == UdpMode::Oracle {
+            if raw.len() < 56 {
+                return None;
+            }
+            let seq = u32::from_be_bytes([raw[52], raw[53], raw[54], raw[55]]);
+            
+            // Decrypt the payload portion
+            let mut decrypted = raw[56..].to_vec();
+            self.crypt_buffer(&mut decrypted, seq);
+            
+            if decrypted.len() < 7 {
+                return None;
+            }
+            let pkt_type = decrypted[0];
+            let ack = u32::from_be_bytes([decrypted[1], decrypted[2], decrypted[3], decrypted[4]]);
+            let payload_len = u16::from_be_bytes([decrypted[5], decrypted[6]]) as usize;
+            if decrypted.len() < 7 + payload_len {
+                return None;
+            }
+            let payload = decrypted[7..7 + payload_len].to_vec();
+            return Some((pkt_type, seq, ack, payload));
+        }
+
+        if self.mode == UdpMode::Vortex {
+            let offset = if self.is_server {
+                25
+            } else {
+                68
+            };
+            
+            if raw.len() < offset + 4 {
+                return None;
+            }
+            let seq = u32::from_be_bytes([
+                raw[offset],
+                raw[offset + 1],
+                raw[offset + 2],
+                raw[offset + 3],
+            ]);
+            
+            // Decrypt the payload portion
+            let mut decrypted = raw[offset + 4..].to_vec();
+            self.crypt_buffer(&mut decrypted, seq);
+            
+            if decrypted.len() < 7 {
+                return None;
+            }
+            let pkt_type = decrypted[0];
+            let ack = u32::from_be_bytes([decrypted[1], decrypted[2], decrypted[3], decrypted[4]]);
+            let payload_len = u16::from_be_bytes([decrypted[5], decrypted[6]]) as usize;
+            if decrypted.len() < 7 + payload_len {
+                return None;
+            }
+            let payload = decrypted[7..7 + payload_len].to_vec();
+            return Some((pkt_type, seq, ack, payload));
+        }
+
         // Flash / Photon / Hysteria deframing (encrypted)
         // Format: [seq (4, plaintext)] + encrypt_with(seq)[pkt_type(1) + ack(4) + payload_len(2) + payload + padding]
         if raw.len() < 12 {
@@ -603,7 +782,7 @@ impl UdpVirtualStreamInner {
         }
 
         // Apply Micro-jitter (Timing Shaper) to evade DPI statistical signature analysis
-        if self.mode == UdpMode::Halo || self.mode == UdpMode::Lantern {
+        if self.mode == UdpMode::Halo || self.mode == UdpMode::Lantern || self.mode == UdpMode::Oracle || self.mode == UdpMode::Vortex {
             let jitter_ms = {
                 let mut rng = rand::thread_rng();
                 if rng.gen_bool(0.15) {
@@ -1074,6 +1253,7 @@ impl UdpMultiplexer {
                                     mode,
                                     rx,
                                     false,
+                                    true, // is_server
                                     &token_clone
                                 );
                                 
@@ -1107,7 +1287,7 @@ impl UdpMultiplexer {
         let mut map = self.sessions.lock().await;
         map.insert(peer, tx);
         
-        UdpVirtualStream::new(self.socket.clone(), peer, mode, rx, handshake_done, "")
+        UdpVirtualStream::new(self.socket.clone(), peer, mode, rx, handshake_done, true, "")
     }
 
     #[allow(dead_code)]

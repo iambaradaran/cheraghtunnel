@@ -29,7 +29,7 @@ impl Drop for LoopGuard {
 
 
 fn is_udp_protocol(protocol: &str) -> bool {
-    matches!(protocol, "flash" | "ray" | "lantern" | "halo" | "hysteria")
+    matches!(protocol, "flash" | "ray" | "lantern" | "halo" | "hysteria" | "oracle" | "vortex")
 }
 
 fn get_udp_mode(protocol: &str) -> UdpMode {
@@ -38,6 +38,8 @@ fn get_udp_mode(protocol: &str) -> UdpMode {
         "lantern" => UdpMode::Lantern,
         "halo" => UdpMode::Halo,
         "hysteria" => UdpMode::Hysteria,
+        "oracle" => UdpMode::Oracle,
+        "vortex" => UdpMode::Vortex,
         _ => UdpMode::Flash,
     }
 }
@@ -616,7 +618,7 @@ pub async fn run_client(
                             return;
                         }
                     };
-                    let mut stream = UdpVirtualStream::new(socket.clone(), peer_addr, mode, rx, false, &token_clone);
+                    let mut stream = UdpVirtualStream::new(socket.clone(), peer_addr, mode, rx, false, false, &token_clone);
 
                     let socket_clone = socket.clone();
                     let recv_handle = tokio::spawn(async move {
