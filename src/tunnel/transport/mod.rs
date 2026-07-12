@@ -635,21 +635,20 @@ where
                 this.write_buf.reserve(total_capacity - this.write_buf.capacity());
             }
 
-            let mut body = Vec::with_capacity(total_body_len);
-            body.extend_from_slice(&(payload_len as u16).to_be_bytes());
-            body.extend_from_slice(&buf[..payload_len]);
-            
-            let mut padding = vec![0u8; padding_len];
-            rng.fill(&mut padding[..]);
-            body.extend_from_slice(&padding);
-
-            for (i, b) in body.iter_mut().enumerate() {
-                *b ^= this.xor_key[i % 32];
-            }
-
+            // Build directly in write_buf — no intermediate Vec allocations!
             let chunk_header = format!("{:x}\r\n", total_body_len);
             this.write_buf.extend_from_slice(chunk_header.as_bytes());
-            this.write_buf.extend_from_slice(&body);
+            let xor_offset = this.write_buf.len();
+            this.write_buf.extend_from_slice(&(payload_len as u16).to_be_bytes());
+            this.write_buf.extend_from_slice(&buf[..payload_len]);
+            let pad_start = this.write_buf.len();
+            this.write_buf.resize(pad_start + padding_len, 0);
+            rng.fill(&mut this.write_buf[pad_start..]);
+
+            // XOR in-place on write_buf
+            for i in 0..total_body_len {
+                this.write_buf[xor_offset + i] ^= this.xor_key[i % 32];
+            }
             this.write_buf.extend_from_slice(b"\r\n");
         }
 
