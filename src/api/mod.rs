@@ -362,7 +362,7 @@ async fn delete_tunnel_handler(
                         "systemctl stop cheragh-server-{} || true && systemctl disable cheragh-server-{} || true && rm -f /etc/systemd/system/cheragh-server-{}.service && rm -f /usr/local/bin/cheraghtunnel-{} && systemctl daemon-reload",
                         id, id, id, id
                     );
-                    let _ = run_ssh_command(&n, &cmd).await;
+                    let _ = run_ssh_command(&n, &cmd, None).await;
                 }
             }
             if let Some(k_id) = tunnel.kharej_node_id {
@@ -371,7 +371,7 @@ async fn delete_tunnel_handler(
                         "systemctl stop cheragh-node-{} || true && systemctl disable cheragh-node-{} || true && rm -f /etc/systemd/system/cheragh-node-{}.service && rm -f /usr/local/bin/cheraghtunnel-{} && systemctl daemon-reload",
                         id, id, id, id
                     );
-                    let _ = run_ssh_command(&n, &cmd).await;
+                    let _ = run_ssh_command(&n, &cmd, None).await;
                 }
             }
         });
@@ -429,11 +429,8 @@ async fn update_tunnel_handler(
                         if let Some(i_id) = tunnel.iran_node_id {
                             if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
                                 let server_script = generate_server_script(&tunnel);
-                                let cmd = format!("cat > /tmp/server.sh << 'EOF_SCRIPT'
-{}
-EOF_SCRIPT
-bash /tmp/server.sh && rm -f /tmp/server.sh", server_script);
-                                let _ = run_ssh_command(&n, &cmd).await;
+                                let cmd = "cat > /tmp/server.sh && bash /tmp/server.sh && rm -f /tmp/server.sh";
+                                let _ = run_ssh_command(&n, cmd, Some(&server_script)).await;
                             }
                         }
                         if let Some(k_id) = tunnel.kharej_node_id {
@@ -441,11 +438,8 @@ bash /tmp/server.sh && rm -f /tmp/server.sh", server_script);
                                 if let Some(i_id) = tunnel.iran_node_id {
                                     if let Ok(Some(i_n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
                                         let client_script = generate_client_script(&tunnel, &i_n.host);
-                                        let cmd = format!("cat > /tmp/client.sh << 'EOF_SCRIPT'
-{}
-EOF_SCRIPT
-bash /tmp/client.sh && rm -f /tmp/client.sh", client_script);
-                                        let _ = run_ssh_command(&k_n, &cmd).await;
+                                        let cmd = "cat > /tmp/client.sh && bash /tmp/client.sh && rm -f /tmp/client.sh";
+                                        let _ = run_ssh_command(&k_n, cmd, Some(&client_script)).await;
                                     }
                                 }
                             }
@@ -477,12 +471,12 @@ async fn toggle_tunnel_handler(
         tokio::spawn(async move {
             if let Some(i_id) = tunnel.iran_node_id {
                 if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
-                    let _ = run_ssh_command(&n, &format!("systemctl disable cheragh-server-{} && systemctl stop cheragh-server-{}", tunnel.id.unwrap(), tunnel.id.unwrap())).await;
+                    let _ = run_ssh_command(&n, &format!("systemctl disable cheragh-server-{} && systemctl stop cheragh-server-{}", tunnel.id.unwrap(), tunnel.id.unwrap()), None).await;
                 }
             }
             if let Some(k_id) = tunnel.kharej_node_id {
                 if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, k_id) {
-                    let _ = run_ssh_command(&n, &format!("systemctl disable cheragh-node-{} && systemctl stop cheragh-node-{}", tunnel.id.unwrap(), tunnel.id.unwrap())).await;
+                    let _ = run_ssh_command(&n, &format!("systemctl disable cheragh-node-{} && systemctl stop cheragh-node-{}", tunnel.id.unwrap(), tunnel.id.unwrap()), None).await;
                 }
             }
         });
@@ -513,8 +507,8 @@ async fn toggle_tunnel_handler(
         tokio::spawn(async move {
             // Deploy Iran Server
             let server_script = generate_server_script(&tunnel);
-            let cmd = format!("cat > /tmp/server.sh << 'EOF_SCRIPT'\n{}\nEOF_SCRIPT\nbash /tmp/server.sh && rm -f /tmp/server.sh", server_script);
-            if let Err(e) = run_ssh_command(&iran_node, &cmd).await {
+            let cmd = "cat > /tmp/server.sh && bash /tmp/server.sh && rm -f /tmp/server.sh";
+            if let Err(e) = run_ssh_command(&iran_node, cmd, Some(&server_script)).await {
                 eprintln!("[DEPLOY] Iran Node SSH failed: {}", e);
                 let _ = db::update_tunnel_status(&db_path_spawn, id, "error");
                 return;
@@ -522,8 +516,8 @@ async fn toggle_tunnel_handler(
 
             // Deploy Kharej Client
             let client_script = generate_client_script(&tunnel, &iran_node.host);
-            let cmd = format!("cat > /tmp/client.sh << 'EOF_SCRIPT'\n{}\nEOF_SCRIPT\nbash /tmp/client.sh && rm -f /tmp/client.sh", client_script);
-            if let Err(e) = run_ssh_command(&kharej_node, &cmd).await {
+            let cmd = "cat > /tmp/client.sh && bash /tmp/client.sh && rm -f /tmp/client.sh";
+            if let Err(e) = run_ssh_command(&kharej_node, cmd, Some(&client_script)).await {
                 eprintln!("[DEPLOY] Kharej Node SSH failed: {}", e);
                 let _ = db::update_tunnel_status(&db_path_spawn, id, "error");
                 return;
@@ -539,6 +533,7 @@ async fn toggle_tunnel_handler(
 async fn run_ssh_command(
     node: &db::Node,
     command: &str,
+    stdin_data: Option<&str>,
 ) -> Result<String, String> {
     let key_path = if let Some(pk) = &node.private_key {
         if pk.trim().is_empty() { None } else {
@@ -572,7 +567,22 @@ async fn run_ssh_command(
         ]);
     }
 
-    let output = ssh_cmd.output().await.map_err(|e| e.to_string())?;
+    if stdin_data.is_some() {
+        ssh_cmd.stdin(std::process::Stdio::piped());
+    }
+    ssh_cmd.stdout(std::process::Stdio::piped());
+    ssh_cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = ssh_cmd.spawn().map_err(|e| e.to_string())?;
+
+    if let Some(data) = stdin_data {
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(data.as_bytes()).await;
+        }
+    }
+
+    let output = child.wait_with_output().await.map_err(|e| e.to_string())?;
     
     if let Some(path) = key_path {
         let _ = tokio::fs::remove_file(path).await;
