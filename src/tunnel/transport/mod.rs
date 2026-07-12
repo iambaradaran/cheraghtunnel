@@ -560,7 +560,7 @@ where
                     let payload_end = payload_start + payload_len;
 
                     // Fast path: skip VecDeque if caller has enough room
-                    if this.payload_buf.is_empty() && buf.remaining() >= payload_len {
+                    if payload_len > 0 && this.payload_buf.is_empty() && buf.remaining() >= payload_len {
                         buf.put_slice(&this.read_buf[payload_start..payload_end]);
                         this.advance_read(size);
                         this.read_state = NirvanaReadState::ChunkFooter;
@@ -1314,9 +1314,19 @@ pub async fn client_handshake(
             socket.write_all(req.as_bytes()).await?;
             socket.flush().await?;
             
-            let mut resp = [0u8; 256];
-            let n = socket.read(&mut resp).await?;
-            let resp_str = String::from_utf8_lossy(&resp[..n]);
+            let mut header_buf = Vec::new();
+            let mut temp = [0u8; 1];
+            loop {
+                socket.read_exact(&mut temp).await?;
+                header_buf.push(temp[0]);
+                if header_buf.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+                if header_buf.len() > 4096 {
+                    return Err("HTTP header limit exceeded".into());
+                }
+            }
+            let resp_str = String::from_utf8_lossy(&header_buf);
             if !resp_str.contains("200 OK") {
                 return Err("HTTP chunked upgrade failed".into());
             }
@@ -1338,9 +1348,20 @@ pub async fn client_handshake(
             );
             socket.write_all(req.as_bytes()).await?;
             socket.flush().await?;
-            let mut resp = [0u8; 256];
-            let n = socket.read(&mut resp).await?;
-            let resp_str = String::from_utf8_lossy(&resp[..n]);
+            
+            let mut header_buf = Vec::new();
+            let mut temp = [0u8; 1];
+            loop {
+                socket.read_exact(&mut temp).await?;
+                header_buf.push(temp[0]);
+                if header_buf.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+                if header_buf.len() > 4096 {
+                    return Err("HTTP header limit exceeded".into());
+                }
+            }
+            let resp_str = String::from_utf8_lossy(&header_buf);
             if !resp_str.contains("101 Switching Protocols") {
                 return Err("HTTP upgrade failed".into());
             }
