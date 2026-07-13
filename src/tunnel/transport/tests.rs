@@ -255,3 +255,8 @@ async fn test_protocol_vortex() {
 async fn test_protocol_nirvana() {
     run_handshake_test("nirvana", false).await;
 }
+
+#[tokio::test]
+async fn test_protocol_spectre() {
+    run_handshake_test("spectre", false).await;
+}

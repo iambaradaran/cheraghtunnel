@@ -366,6 +366,7 @@ pub async fn run_server(
     // Background task to run public UDP relay listener
     let active_controls_udp = active_controls.clone();
     let rr_index_udp = rr_index.clone();
+    let protocol_udp = protocol.to_string();
     let _udp_relay_guard = LoopGuard {
         handle: Some(tokio::spawn(async move {
             let public_udp_addr = format!("0.0.0.0:{}", public_port);
@@ -381,6 +382,7 @@ pub async fn run_server(
             
             let mut buf = vec![0u8; 65535];
             let sessions: Arc<tokio::sync::Mutex<HashMap<std::net::SocketAddr, mpsc::Sender<Vec<u8>>>>> = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+            let protocol_clone = protocol_udp.clone();
             
             while let Ok((n, user_addr)) = socket.recv_from(&mut buf).await {
                 let data = buf[..n].to_vec();
@@ -394,57 +396,128 @@ pub async fn run_server(
                         continue;
                     }
                     
-                    let idx = rr_index_udp.fetch_add(1, Ordering::SeqCst);
-                    let mut ctrl = pool[idx % pool.len()].clone();
-                    drop(pool);
-                    
                     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1000);
                     map.insert(user_addr, tx.clone());
                     let sessions_clone = sessions.clone();
                     let socket_clone = socket.clone();
                     
-                    tokio::spawn(async move {
-                        if let Ok(stream) = ctrl.open_stream().await {
-                            use tokio::io::AsyncWriteExt;
-                            let mut compat_stream = stream.compat();
-                            if compat_stream.write_all(b"UDP\n").await.is_ok() {
-                                let (mut reader, mut writer) = tokio::io::split(compat_stream);
-                                
-                                let mut rx_task = tokio::spawn(async move {
-                                    while let Some(pkt) = rx.recv().await {
-                                        let len_bytes = (pkt.len() as u32).to_be_bytes();
-                                        if writer.write_all(&len_bytes).await.is_err() || writer.write_all(&pkt).await.is_err() {
-                                            break;
+                    if protocol_clone == "spectre" {
+                        let mut writers = Vec::new();
+                        let controls = pool.iter().cloned().collect::<Vec<_>>();
+                        drop(pool);
+                        
+                        for mut ctrl in controls {
+                            let (stream_tx, mut stream_rx) = mpsc::channel::<Vec<u8>>(100);
+                            writers.push(stream_tx);
+                            
+                            let socket_clone2 = socket_clone.clone();
+                            tokio::spawn(async move {
+                                if let Ok(stream) = ctrl.open_stream().await {
+                                    use tokio::io::AsyncWriteExt;
+                                    let mut compat_stream = stream.compat();
+                                    if compat_stream.write_all(b"UDP\n").await.is_ok() {
+                                        let (mut reader, mut writer) = tokio::io::split(compat_stream);
+                                        
+                                        let mut w_task = tokio::spawn(async move {
+                                            while let Some(pkt) = stream_rx.recv().await {
+                                                let len_bytes = (pkt.len() as u32).to_be_bytes();
+                                                if writer.write_all(&len_bytes).await.is_err() || writer.write_all(&pkt).await.is_err() {
+                                                    break;
+                                                }
+                                            }
+                                        });
+                                        
+                                        let mut r_task = tokio::spawn(async move {
+                                            use tokio::io::AsyncReadExt;
+                                            let mut len_buf = [0u8; 4];
+                                            loop {
+                                                if tokio::time::timeout(tokio::time::Duration::from_secs(30), reader.read_exact(&mut len_buf)).await.is_err() {
+                                                    break;
+                                                }
+                                                let len = u32::from_be_bytes(len_buf) as usize;
+                                                let mut pkt_buf = vec![0u8; len];
+                                                if reader.read_exact(&mut pkt_buf).await.is_err() {
+                                                    break;
+                                                }
+                                                let _ = socket_clone2.send_to(&pkt_buf, user_addr).await;
+                                            }
+                                        });
+                                        
+                                        tokio::select! {
+                                            _ = &mut w_task => { r_task.abort(); }
+                                            _ = &mut r_task => { w_task.abort(); }
                                         }
                                     }
-                                });
-                                
-                                let socket_clone2 = socket_clone.clone();
-                                let mut tx_task = tokio::spawn(async move {
-                                    use tokio::io::AsyncReadExt;
-                                    let mut len_buf = [0u8; 4];
-                                    loop {
-                                        if tokio::time::timeout(tokio::time::Duration::from_secs(30), reader.read_exact(&mut len_buf)).await.is_err() {
-                                            break;
+                                }
+                            });
+                        }
+                        
+                        tokio::spawn(async move {
+                            let mut idx = 0;
+                            loop {
+                                match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx.recv()).await {
+                                    Ok(Some(pkt)) => {
+                                        if !writers.is_empty() {
+                                            let _ = writers[idx % writers.len()].send(pkt).await;
+                                            idx += 1;
                                         }
-                                        let len = u32::from_be_bytes(len_buf) as usize;
-                                        let mut pkt_buf = vec![0u8; len];
-                                        if reader.read_exact(&mut pkt_buf).await.is_err() {
-                                            break;
-                                        }
-                                        let _ = socket_clone2.send_to(&pkt_buf, user_addr).await;
                                     }
-                                });
-                                
-                                tokio::select! {
-                                    _ = &mut rx_task => { tx_task.abort(); }
-                                    _ = &mut tx_task => { rx_task.abort(); }
+                                    Ok(None) | Err(_) => {
+                                        break;
+                                    }
                                 }
                             }
-                        }
-                        let mut map = sessions_clone.lock().await;
-                        map.remove(&user_addr);
-                    });
+                            let mut map = sessions_clone.lock().await;
+                            map.remove(&user_addr);
+                        });
+                        
+                    } else {
+                        let mut ctrl = pool[rr_index_udp.fetch_add(1, Ordering::SeqCst) % pool.len()].clone();
+                        drop(pool);
+                        
+                        tokio::spawn(async move {
+                            if let Ok(stream) = ctrl.open_stream().await {
+                                use tokio::io::AsyncWriteExt;
+                                let mut compat_stream = stream.compat();
+                                if compat_stream.write_all(b"UDP\n").await.is_ok() {
+                                    let (mut reader, mut writer) = tokio::io::split(compat_stream);
+                                    
+                                    let mut rx_task = tokio::spawn(async move {
+                                        while let Some(pkt) = rx.recv().await {
+                                            let len_bytes = (pkt.len() as u32).to_be_bytes();
+                                            if writer.write_all(&len_bytes).await.is_err() || writer.write_all(&pkt).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                    });
+                                    
+                                    let socket_clone2 = socket_clone.clone();
+                                    let mut tx_task = tokio::spawn(async move {
+                                        use tokio::io::AsyncReadExt;
+                                        let mut len_buf = [0u8; 4];
+                                        loop {
+                                            if tokio::time::timeout(tokio::time::Duration::from_secs(30), reader.read_exact(&mut len_buf)).await.is_err() {
+                                                break;
+                                            }
+                                            let len = u32::from_be_bytes(len_buf) as usize;
+                                            let mut pkt_buf = vec![0u8; len];
+                                            if reader.read_exact(&mut pkt_buf).await.is_err() {
+                                                break;
+                                            }
+                                            let _ = socket_clone2.send_to(&pkt_buf, user_addr).await;
+                                        }
+                                    });
+                                    
+                                    tokio::select! {
+                                        _ = &mut rx_task => { tx_task.abort(); }
+                                        _ = &mut tx_task => { rx_task.abort(); }
+                                    }
+                                }
+                            }
+                            let mut map = sessions_clone.lock().await;
+                            map.remove(&user_addr);
+                        });
+                    }
                     
                     let _ = tx.send(data).await;
                 }

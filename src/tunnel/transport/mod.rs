@@ -676,6 +676,172 @@ where
     }
 }
 
+pub enum ZeroRttState {
+    ReadingHandshake {
+        expected: Vec<u8>,
+        read_buf: Vec<u8>,
+    },
+    Ready,
+}
+
+pub struct ZeroRttStream<S> {
+    inner: S,
+    state: ZeroRttState,
+    pending_payload: std::collections::VecDeque<u8>,
+}
+
+impl<S> ZeroRttStream<S> {
+    pub fn new(inner: S, expected_response: Vec<u8>) -> Self {
+        Self {
+            inner,
+            state: ZeroRttState::ReadingHandshake {
+                expected: expected_response,
+                read_buf: Vec::new(),
+            },
+            pending_payload: std::collections::VecDeque::new(),
+        }
+    }
+    
+    #[allow(dead_code)]
+    pub fn get_ref(&self) -> &S {
+        &self.inner
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for ZeroRttStream<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+
+        loop {
+            // 1. Yield any pending payload bytes first
+            if !this.pending_payload.is_empty() {
+                let n = std::cmp::min(buf.remaining(), this.pending_payload.len());
+                let (slice1, slice2) = this.pending_payload.as_slices();
+                if slice1.len() >= n {
+                    buf.put_slice(&slice1[..n]);
+                } else {
+                    buf.put_slice(slice1);
+                    buf.put_slice(&slice2[..(n - slice1.len())]);
+                }
+                this.pending_payload.drain(..n);
+                return Poll::Ready(Ok(()));
+            }
+
+            // 2. If already Ready, read directly from inner
+            if let ZeroRttState::Ready = this.state {
+                return Pin::new(&mut this.inner).poll_read(cx, buf);
+            }
+
+            // 3. Otherwise, we are still ReadingHandshake
+            let mut matched = false;
+            let mut consumed_len = 0;
+            
+            if let ZeroRttState::ReadingHandshake { expected, read_buf } = &mut this.state {
+                let mut temp_buf = [0u8; 4096];
+                let mut temp_read_buf = ReadBuf::new(&mut temp_buf);
+                
+                match Pin::new(&mut this.inner).poll_read(cx, &mut temp_read_buf) {
+                    Poll::Ready(Ok(())) => {
+                        let n = temp_read_buf.filled().len();
+                        if n == 0 {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                "ZeroRttStream EOF during handshake",
+                            )));
+                        }
+                        read_buf.extend_from_slice(&temp_buf[..n]);
+                        
+                        if read_buf.len() >= expected.len() {
+                            matched = if expected == b"ACK" {
+                                read_buf.starts_with(b"ACK")
+                            } else if expected == b"HTTP/1.1 200 OK" {
+                                if let Some(idx) = read_buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                    let header_str = String::from_utf8_lossy(&read_buf[..idx]);
+                                    if !header_str.contains("200 OK") {
+                                        return Poll::Ready(Err(io::Error::new(
+                                            io::ErrorKind::InvalidData,
+                                            "Nirvana 200 OK auth failed",
+                                        )));
+                                    }
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else if expected == b"ServerHello" {
+                                if read_buf.len() >= 6 {
+                                    if read_buf[0] != 0x16 || read_buf[1] != 0x03 || read_buf[5] != 0x02 {
+                                        return Poll::Ready(Err(io::Error::new(
+                                            io::ErrorKind::InvalidData,
+                                            "Mirage/Spectre ServerHello verification failed",
+                                        )));
+                                    }
+                                    let rec_len = u16::from_be_bytes([read_buf[3], read_buf[4]]) as usize;
+                                    read_buf.len() >= 5 + rec_len
+                                } else {
+                                    false
+                                }
+                            } else {
+                                read_buf.starts_with(expected)
+                            };
+
+                            if matched {
+                                consumed_len = if expected == b"ACK" {
+                                    3
+                                } else if expected == b"HTTP/1.1 200 OK" {
+                                    read_buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4
+                                } else if expected == b"ServerHello" {
+                                    let rec_len = u16::from_be_bytes([read_buf[3], read_buf[4]]) as usize;
+                                    5 + rec_len
+                                } else {
+                                    expected.len()
+                                };
+                            }
+                        }
+                    }
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+
+            if matched {
+                if let ZeroRttState::ReadingHandshake { read_buf, .. } = &mut this.state {
+                    let extra_bytes = &read_buf[consumed_len..];
+                    this.pending_payload.extend(extra_bytes);
+                }
+                this.state = ZeroRttState::Ready;
+            }
+        }
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for ZeroRttStream<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
 // Unified transport stream type
 pub enum TransportStream {
     Tcp(TcpStream),
@@ -694,6 +860,9 @@ pub enum TransportStream {
     ObfuscatedWss(ObfuscatedStream<WsByteStream<ClientTlsStream<TcpStream>>>),
     ObfuscatedWssServer(ObfuscatedStream<WsByteStream<ServerTlsStream<TcpStream>>>),
     Nirvana(NirvanaStream<TcpStream>),
+    ZeroRtt(ZeroRttStream<TcpStream>),
+    ObfuscatedZeroRtt(ObfuscatedStream<ZeroRttStream<TcpStream>>),
+    NirvanaZeroRtt(NirvanaStream<ZeroRttStream<TcpStream>>),
 }
 
 impl AsyncRead for TransportStream {
@@ -716,6 +885,9 @@ impl AsyncRead for TransportStream {
             TransportStream::ObfuscatedWss(s) => Pin::new(s).poll_read(cx, buf),
             TransportStream::ObfuscatedWssServer(s) => Pin::new(s).poll_read(cx, buf),
             TransportStream::Nirvana(s) => Pin::new(s).poll_read(cx, buf),
+            TransportStream::ZeroRtt(s) => Pin::new(s).poll_read(cx, buf),
+            TransportStream::ObfuscatedZeroRtt(s) => Pin::new(s).poll_read(cx, buf),
+            TransportStream::NirvanaZeroRtt(s) => Pin::new(s).poll_read(cx, buf),
         }
     }
 }
@@ -740,6 +912,9 @@ impl AsyncWrite for TransportStream {
             TransportStream::ObfuscatedWss(s) => Pin::new(s).poll_write(cx, buf),
             TransportStream::ObfuscatedWssServer(s) => Pin::new(s).poll_write(cx, buf),
             TransportStream::Nirvana(s) => Pin::new(s).poll_write(cx, buf),
+            TransportStream::ZeroRtt(s) => Pin::new(s).poll_write(cx, buf),
+            TransportStream::ObfuscatedZeroRtt(s) => Pin::new(s).poll_write(cx, buf),
+            TransportStream::NirvanaZeroRtt(s) => Pin::new(s).poll_write(cx, buf),
         }
     }
 
@@ -758,6 +933,9 @@ impl AsyncWrite for TransportStream {
             TransportStream::ObfuscatedWss(s) => Pin::new(s).poll_flush(cx),
             TransportStream::ObfuscatedWssServer(s) => Pin::new(s).poll_flush(cx),
             TransportStream::Nirvana(s) => Pin::new(s).poll_flush(cx),
+            TransportStream::ZeroRtt(s) => Pin::new(s).poll_flush(cx),
+            TransportStream::ObfuscatedZeroRtt(s) => Pin::new(s).poll_flush(cx),
+            TransportStream::NirvanaZeroRtt(s) => Pin::new(s).poll_flush(cx),
         }
     }
 
@@ -776,6 +954,9 @@ impl AsyncWrite for TransportStream {
             TransportStream::ObfuscatedWss(s) => Pin::new(s).poll_shutdown(cx),
             TransportStream::ObfuscatedWssServer(s) => Pin::new(s).poll_shutdown(cx),
             TransportStream::Nirvana(s) => Pin::new(s).poll_shutdown(cx),
+            TransportStream::ZeroRtt(s) => Pin::new(s).poll_shutdown(cx),
+            TransportStream::ObfuscatedZeroRtt(s) => Pin::new(s).poll_shutdown(cx),
+            TransportStream::NirvanaZeroRtt(s) => Pin::new(s).poll_shutdown(cx),
         }
     }
 }
@@ -1335,6 +1516,7 @@ fn build_tls_server_hello() -> Vec<u8> {
     record
 }
 
+#[allow(dead_code)]
 // Verifies if the incoming packet is a valid TLS ServerHello record.
 fn verify_tls_server_hello(data: &[u8]) -> bool {
     if data.len() < 38 {
@@ -1362,8 +1544,31 @@ pub async fn client_handshake(
     let decoy_str = extract_domain(&decoy.unwrap_or_else(|| "google.com".to_string()));
     match protocol {
         "beam" | "tcpmux" | "photon" | "quantummux" => {
-            perform_client_upgrade_check(&mut socket, token).await?;
-            Ok(TransportStream::Tcp(socket))
+            use sha2::{Sha256, Digest};
+            use std::time::{SystemTime, UNIX_EPOCH};
+            use rand::Rng;
+
+            let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+            let hash = format!("{:x}", Sha256::digest(format!("{}{}", token, timestamp).as_bytes()));
+            
+            // Generate 10 to 150 bytes of random alphanumeric padding to evade size-based DPI fingerprinting
+            let padding: String = {
+                let mut rng = rand::thread_rng();
+                let pad_len = rng.gen_range(10..150);
+                (0..pad_len)
+                    .map(|_| {
+                        let idx = rng.gen_range(0..62);
+                        let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+                        chars[idx] as char
+                    })
+                    .collect()
+            };
+
+            let auth = format!("Cheragh-Auth-HMAC {} {} v{} {}\n", hash, timestamp, env!("CARGO_PKG_VERSION"), padding);
+            socket.write_all(auth.as_bytes()).await?;
+            socket.flush().await?;
+            
+            Ok(TransportStream::ZeroRtt(ZeroRttStream::new(socket, b"ACK".to_vec())))
         }
         "nirvana" => {
             use sha2::{Sha256, Digest};
@@ -1383,24 +1588,8 @@ pub async fn client_handshake(
             socket.write_all(req.as_bytes()).await?;
             socket.flush().await?;
             
-            let mut header_buf = Vec::new();
-            let mut temp = [0u8; 1];
-            loop {
-                socket.read_exact(&mut temp).await?;
-                header_buf.push(temp[0]);
-                if header_buf.ends_with(b"\r\n\r\n") {
-                    break;
-                }
-                if header_buf.len() > 4096 {
-                    return Err("HTTP header limit exceeded".into());
-                }
-            }
-            let resp_str = String::from_utf8_lossy(&header_buf);
-            if !resp_str.contains("200 OK") {
-                return Err("HTTP chunked upgrade failed".into());
-            }
-            
-            Ok(TransportStream::Nirvana(NirvanaStream::new(socket, token)))
+            let rtt_stream = ZeroRttStream::new(socket, b"HTTP/1.1 200 OK".to_vec());
+            Ok(TransportStream::NirvanaZeroRtt(NirvanaStream::new(rtt_stream, token)))
         }
         "aura" | "httpmux" => {
             use sha2::{Sha256, Digest};
@@ -1495,25 +1684,21 @@ pub async fn client_handshake(
             ).await?;
             Ok(TransportStream::ObfuscatedWss(ObfuscatedStream::new(WsByteStream::new(ws_stream))))
         }
-        "mirage" | "realitymux" => {
+        "mirage" | "realitymux" | "spectre" => {
             // Write standard TLS ClientHello spoofing the decoy domain
             let hello = build_tls_client_hello(&decoy_str, token);
             socket.write_all(&hello).await?;
             socket.flush().await?;
             
-            // Read valid TLS 1.2 ServerHello response from server
-            let mut resp = vec![0u8; 1024];
-            let n = socket.read(&mut resp).await?;
-            if !verify_tls_server_hello(&resp[..n]) {
-                return Err("Reality server validation handshake failed".into());
-            }
-            
+            let rtt_stream = ZeroRttStream::new(socket, b"ServerHello".to_vec());
             // Apply packet padding obfuscation
-            Ok(TransportStream::Obfuscated(ObfuscatedStream::new(socket)))
+            Ok(TransportStream::ObfuscatedZeroRtt(ObfuscatedStream::new(rtt_stream)))
         }
         _ => {
-            perform_client_upgrade_check(&mut socket, token).await?;
-            Ok(TransportStream::Tcp(socket))
+            let auth = format!("Cheragh-Auth-HMAC {} {} v1.0.0\n", token, token);
+            socket.write_all(auth.as_bytes()).await?;
+            socket.flush().await?;
+            Ok(TransportStream::ZeroRtt(ZeroRttStream::new(socket, b"ACK".to_vec())))
         }
     }
 }
@@ -1812,11 +1997,30 @@ pub async fn server_handshake(
             }
             Ok(TransportStream::ObfuscatedWssServer(ObfuscatedStream::new(WsByteStream::new(ws_stream))))
         }
-        "mirage" | "realitymux" => {
-            let mut buf = [0u8; 1024];
-            let n = socket.read(&mut buf).await?;
+        "mirage" | "realitymux" | "spectre" => {
+            use tokio::io::AsyncReadExt;
+            let mut header = [0u8; 5];
+            socket.read_exact(&mut header).await?;
             
-            if verify_tls_client_hello(&buf[..n], token) {
+            let mut client_hello = Vec::new();
+            client_hello.extend_from_slice(&header);
+            
+            if header[0] == 0x16 && header[1] == 0x03 {
+                let rec_len = u16::from_be_bytes([header[3], header[4]]) as usize;
+                if rec_len <= 4096 {
+                    let mut body = vec![0u8; rec_len];
+                    socket.read_exact(&mut body).await?;
+                    client_hello.extend_from_slice(&body);
+                }
+            } else {
+                // Read whatever is immediately available in the socket buffer for the prober
+                let mut temp = [0u8; 1024];
+                if let Ok(Ok(n)) = tokio::time::timeout(std::time::Duration::from_millis(50), socket.read(&mut temp)).await {
+                    client_hello.extend_from_slice(&temp[..n]);
+                }
+            }
+
+            if verify_tls_client_hello(&client_hello, token) {
                 // Successful Reality connection: reply with a standard TLS 1.2 ServerHello
                 let hello = build_tls_server_hello();
                 socket.write_all(&hello).await?;
@@ -1839,7 +2043,7 @@ pub async fn server_handshake(
                 println!("[SERVER] Active probe / invalid ClientHello detected. Proxying to: {}", decoy_addr);
                 
                 if let Ok(mut decoy_conn) = TcpStream::connect(&decoy_addr).await {
-                    let _ = decoy_conn.write_all(&buf[..n]).await;
+                    let _ = decoy_conn.write_all(&client_hello).await;
                     let _ = tokio::io::copy_bidirectional(&mut socket, &mut decoy_conn).await;
                 }
                 
