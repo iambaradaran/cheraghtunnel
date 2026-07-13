@@ -61,20 +61,5 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: ${{ matrix.release_name }}
-          body: |
-            ## 🕯️ چراغ‌تونل (CheraghTunnel) - Release ${{ github.ref_name }}
-            
-            نسخه جدید و بهینه‌سازی شده چراغ‌تونل با پشتیبانی کامل از قابلیت‌های پیشرفته و رفع باگ‌ها منتشر شد.
-            
-            ### 🌟 قابلیت‌های برجسته در این نسخه:
-            - **⚙️ سیستم ویرایش تانل (Edit Configurations):** امکان تغییر زنده‌ی پورت‌ها، پروتکل‌ها، توکن و تنظیمات تانل بدون نیاز به ثبت مجدد.
-            - **🔄 استارت هوشمند دیپلوی (Auto-Start on SSH Deploy):** پورت کنترل در سرور ایران بلافاصله در زمان فشردن دکمه دیپلوی فعال شده و نود خارج بدون مشکل متصل می‌شود.
-            - **⚡ رفع مشکل تداخل پورت (SO_REUSEADDR / SO_REUSEPORT):** آزادسازی آنی پورت‌ها در لایه سوکت سیستم‌عامل برای پایداری و تغییر بدون وقفه پورت تانل‌ها.
-            - **🛡️ رفع قفل فایل (Atomic Release Update):** به‌روزرسانی نودها به صورت اتمیک انجام شده و ارورهای مربوط به قفل بودن باینری یا `Text file busy` به طور کامل برطرف شده است.
-            
-            ---
-            ### 📦 فایل‌های اجرایی (Assets):
-            - **Linux (amd64 / Intel / AMD):** `cheraghtunnel-linux-amd64`
-            - **Linux (arm64 / Raspberry Pi / Ampere):** `cheraghtunnel-linux-arm64`
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
