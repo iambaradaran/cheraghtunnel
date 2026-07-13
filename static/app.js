@@ -583,7 +583,7 @@ const PROTOCOL_OPTIONS_SCHEMA = {
         { name: "sni", label: "SNI (Server Name Indication)", type: "text", default: "www.microsoft.com" },
         { name: "fingerprint", label: "uTLS Fingerprint", type: "select", options: ["chrome", "firefox", "safari", "random"], default: "chrome" }
     ],
-    "hysteria": [
+    "pulsar": [
         { name: "up_mbps", label: "Upload Speed (Mbps)", type: "number", default: 100 },
         { name: "down_mbps", label: "Download Speed (Mbps)", type: "number", default: 100 }
     ],

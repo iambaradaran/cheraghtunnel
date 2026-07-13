@@ -29,7 +29,7 @@ impl Drop for LoopGuard {
 
 
 fn is_udp_protocol(protocol: &str) -> bool {
-    matches!(protocol, "flash" | "ray" | "lantern" | "halo" | "hysteria" | "oracle" | "vortex")
+    matches!(protocol, "flash" | "ray" | "lantern" | "halo" | "pulsar" | "oracle" | "vortex")
 }
 
 fn get_udp_mode(protocol: &str) -> UdpMode {
@@ -37,7 +37,7 @@ fn get_udp_mode(protocol: &str) -> UdpMode {
         "ray" => UdpMode::Ray,
         "lantern" => UdpMode::Lantern,
         "halo" => UdpMode::Halo,
-        "hysteria" => UdpMode::Hysteria,
+        "pulsar" => UdpMode::Pulsar,
         "oracle" => UdpMode::Oracle,
         "vortex" => UdpMode::Vortex,
         _ => UdpMode::Flash,

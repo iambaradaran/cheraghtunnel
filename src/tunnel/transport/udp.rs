@@ -62,7 +62,7 @@ pub enum UdpMode {
     Flash,     // Reliable sliding-window UDP
     Photon,    // Reliable UDP + FEC
     Halo,      // Reliable UDP + WebRTC/STUN framing
-    Hysteria,  // High-speed paced reliable UDP
+    Pulsar,    // High-speed paced reliable UDP
     Lantern,   // Reliable UDP + L3/TUN IP packet framing
     Oracle,    // Reliable UDP + DNS EDNS0 masquerading
     Vortex,    // Reliable UDP + Source Engine Query masquerading
@@ -276,7 +276,7 @@ impl UdpVirtualStream {
             tokens: 10000.0,
             max_tokens: 10000.0,
             pacing_rate: {
-                if let Ok(val) = std::env::var("HYSTERIA_MBPS") {
+                if let Ok(val) = std::env::var("PULSAR_MBPS") {
                     if let Ok(mbps) = val.parse::<f64>() {
                         (mbps * 1_000_000.0 / 12_000.0).max(100.0)
                     } else {
@@ -612,7 +612,7 @@ impl UdpVirtualStreamInner {
             return raw;
         }
 
-        // Flash / Photon / Hysteria (Encrypted Reliable UDP):
+        // Flash / Photon / Pulsar (Encrypted Reliable UDP):
         // [seq (4, plaintext)] + encrypt_with(seq)[pkt_type(1) + ack(4) + payload_len(2) + payload + padding]
         // The seq is left in plaintext so the receiver can derive the decryption nonce.
         // All remaining bytes are XOR-encrypted making the packet look like random noise.
@@ -745,7 +745,7 @@ impl UdpVirtualStreamInner {
             return Some((pkt_type, seq, ack, payload));
         }
 
-        // Flash / Photon / Hysteria deframing (encrypted)
+        // Flash / Photon / Pulsar deframing (encrypted)
         // Format: [seq (4, plaintext)] + encrypt_with(seq)[pkt_type(1) + ack(4) + payload_len(2) + payload + padding]
         if raw.len() < 12 {
             return None;
@@ -769,7 +769,7 @@ impl UdpVirtualStreamInner {
     }
 
     async fn send_packet_paced(&mut self, data: &[u8]) -> io::Result<()> {
-        if self.mode == UdpMode::Hysteria {
+        if self.mode == UdpMode::Pulsar {
             let now = Instant::now();
             let elapsed = now.duration_since(self.last_sent_time).as_secs_f64();
             self.last_sent_time = now;
@@ -1147,7 +1147,7 @@ impl AsyncWrite for UdpVirtualStream {
             }
         }
 
-        if inner.mode == UdpMode::Hysteria {
+        if inner.mode == UdpMode::Pulsar {
             let now = Instant::now();
             let elapsed = now.duration_since(inner.last_sent_time).as_secs_f64();
             inner.last_sent_time = now;
@@ -1228,7 +1228,7 @@ impl UdpMultiplexer {
                             }
                         } else {
                             // Determine whether this first packet from a new peer should open a session.
-                            // For encrypted modes (Flash/Photon/Hysteria), we cannot inspect pkt_type
+                            // For encrypted modes (Flash/Photon/Pulsar), we cannot inspect pkt_type
                             // directly — instead we accept any first packet and let the handshake check
                             // reject illegitimate clients.
                             let is_syn = if mode == UdpMode::Ray {
@@ -1238,7 +1238,7 @@ impl UdpMultiplexer {
                                 true
                             } else {
                                 match mode {
-                                    // Flash / Photon / Hysteria / Lantern / Halo: fully encrypted — accept and let handshake check decide
+                                    // Flash / Photon / Pulsar / Lantern / Halo: fully encrypted — accept and let handshake check decide
                                     _ => data.len() >= 12,
                                 }
                             };

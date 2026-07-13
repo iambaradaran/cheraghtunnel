@@ -30,7 +30,7 @@ async fn run_handshake_test(protocol: &'static str, is_udp: bool) {
             "photon" => udp::UdpMode::Photon,
             "lantern" => udp::UdpMode::Lantern,
             "halo" => udp::UdpMode::Halo,
-            "hysteria" => udp::UdpMode::Hysteria,
+            "pulsar" => udp::UdpMode::Pulsar,
             "oracle" => udp::UdpMode::Oracle,
             "vortex" => udp::UdpMode::Vortex,
             _ => udp::UdpMode::Flash,
@@ -237,8 +237,8 @@ async fn test_protocol_halo() {
 }
 
 #[tokio::test]
-async fn test_protocol_hysteria() {
-    run_handshake_test("hysteria", true).await;
+async fn test_protocol_pulsar() {
+    run_handshake_test("pulsar", true).await;
 }
 
 #[tokio::test]
