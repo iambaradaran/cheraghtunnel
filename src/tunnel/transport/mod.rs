@@ -1108,6 +1108,7 @@ where
 fn build_tls_client_hello(decoy: &str, token: &str) -> Vec<u8> {
     use sha2::{Sha256, Digest};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use rand::Rng;
 
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1129,13 +1130,23 @@ fn build_tls_client_hello(decoy: &str, token: &str) -> Vec<u8> {
     body.push(32); // Session ID length
     body.extend_from_slice(&[0u8; 32]); // Dummy Session ID
     
-    // Cipher suites (1 suite: TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256)
-    body.extend_from_slice(&[0x00, 0x02, 0xc0, 0x2f]);
-    // Compression
+    // Propose 7 modern cipher suites (14 bytes total list length):
+    // TLS_AES_128_GCM_SHA256 (0x1301), TLS_AES_256_GCM_SHA256 (0x1302), TLS_CHACHA20_POLY1305_SHA256 (0x1303),
+    // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 (0xc02b), TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 (0xc02f),
+    // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA256 (0xc02c), TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA256 (0xc030)
+    body.extend_from_slice(&[
+        0x00, 0x0e, // Cipher Suites Length: 14 bytes
+        0x13, 0x01, 0x13, 0x02, 0x13, 0x03,
+        0xc0, 0x2b, 0xc0, 0x2f, 0xc0, 0x2c, 0xc0, 0x30
+    ]);
+    
+    // Compression methods (1 method: null)
     body.extend_from_slice(&[0x01, 0x00]);
 
     // Extensions
     let mut extensions = Vec::new();
+    
+    // 1. Server Name Indication (SNI)
     let mut sni = Vec::new();
     let name_len = decoy.len() as u16;
     sni.extend_from_slice(&(name_len + 3).to_be_bytes()); // server name list length
@@ -1147,14 +1158,55 @@ fn build_tls_client_hello(decoy: &str, token: &str) -> Vec<u8> {
     extensions.extend_from_slice(&(sni.len() as u16).to_be_bytes());
     extensions.extend_from_slice(&sni);
 
-    // Append ALPN extension (http/1.1) to look like a standard web browser connection
+    // 2. ALPN extension (offering http/1.1)
     extensions.extend_from_slice(&[
         0x00, 0x10, // Extension Type: ALPN
         0x00, 0x0b, // Extension Length: 11
         0x00, 0x09, // Protocol List Length: 9
         0x08, // Protocol Name Length: 8
-        b'h', b't', b't', b'p', b'/', b'1', b'.', b'1' // "http/1.1"
+        b'h', b't', b't', b'p', b'/', b'1', b'.', b'1'
     ]);
+
+    // 3. Supported Versions (offering TLS 1.3 & TLS 1.2)
+    extensions.extend_from_slice(&[
+        0x00, 0x2b, // Extension Type: Supported Versions
+        0x00, 0x05, // Extension Length: 5
+        0x04,       // Versions List Length: 4
+        0x03, 0x04, // TLS 1.3
+        0x03, 0x03  // TLS 1.2
+    ]);
+
+    // 4. Supported Groups (secp256r1 & x25519)
+    extensions.extend_from_slice(&[
+        0x00, 0x0a, // Extension Type: Supported Groups
+        0x00, 0x06, // Extension Length: 6
+        0x04,       // Groups List Length: 4
+        0x00, 0x1d, // x25519
+        0x00, 0x17  // secp256r1
+    ]);
+
+    // 5. Signature Algorithms (ecdsa_sha256, rsa_pss_sha256, rsa_pkcs1_sha256)
+    extensions.extend_from_slice(&[
+        0x00, 0x0d, // Extension Type: Signature Algorithms
+        0x00, 0x08, // Extension Length: 8
+        0x06,       // Algorithms List Length: 6
+        0x04, 0x03, // ecdsa_secp256r1_sha256
+        0x08, 0x04, // rsa_pss_rsae_sha256
+        0x04, 0x01  // rsa_pkcs1_sha256
+    ]);
+
+    // 6. Key Share (X25519 public key share)
+    let mut key_share_bytes = [0u8; 32];
+    rand::thread_rng().fill(&mut key_share_bytes);
+    let mut key_share = Vec::new();
+    key_share.extend_from_slice(&[0x00, 0x24]); // Client key shares length (36 bytes)
+    key_share.extend_from_slice(&[0x00, 0x1d]); // Named Group: x25519
+    key_share.extend_from_slice(&[0x00, 0x20]); // Key length: 32 bytes
+    key_share.extend_from_slice(&key_share_bytes);
+
+    extensions.extend_from_slice(&[0x00, 0x33]); // Extension Type: Key Share
+    extensions.extend_from_slice(&(key_share.len() as u16).to_be_bytes());
+    extensions.extend_from_slice(&key_share);
 
     let ext_len = extensions.len() as u16;
     body.extend_from_slice(&ext_len.to_be_bytes());
@@ -1234,14 +1286,31 @@ fn build_tls_server_hello() -> Vec<u8> {
     body.extend_from_slice(&[0xc0, 0x2f]);
     body.push(0x00); // Compression method: null
     
-    // ALPN extension (http/1.1)
+    // Extensions
     let mut extensions = Vec::new();
+    
+    // 1. ALPN extension (http/1.1)
     extensions.extend_from_slice(&[
         0x00, 0x10, // Extension Type: ALPN
         0x00, 0x0b, // Extension Length: 11
         0x00, 0x09, // Protocol List Length: 9
         0x08, // Protocol Name Length: 8
         b'h', b't', b't', b'p', b'/', b'1', b'.', b'1'
+    ]);
+    
+    // 2. Renegotiation Info
+    extensions.extend_from_slice(&[
+        0xff, 0x01, // Extension Type: Renegotiation Info
+        0x00, 0x01, // Extension Length: 1
+        0x00        // Renegotiation verification data length: 0
+    ]);
+
+    // 3. EC Point Formats (uncompressed format)
+    extensions.extend_from_slice(&[
+        0x00, 0x0b, // Extension Type: EC Point Formats
+        0x00, 0x02, // Extension Length: 2
+        0x01,       // EC point formats length: 1
+        0x00        // EC point format: uncompressed
     ]);
     
     let ext_len = extensions.len() as u16;
@@ -1427,8 +1496,8 @@ pub async fn client_handshake(
             Ok(TransportStream::ObfuscatedWss(ObfuscatedStream::new(WsByteStream::new(ws_stream))))
         }
         "mirage" | "realitymux" => {
-            // Write standard TLS 1.2 ClientHello spoofing microsoft.com
-            let hello = build_tls_client_hello("microsoft.com", token);
+            // Write standard TLS ClientHello spoofing the decoy domain
+            let hello = build_tls_client_hello(&decoy_str, token);
             socket.write_all(&hello).await?;
             socket.flush().await?;
             
