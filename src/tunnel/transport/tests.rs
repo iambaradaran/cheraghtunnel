@@ -1,4 +1,4 @@
-use crate::tunnel::transport::{client_handshake, server_handshake, TransportStream, udp};
+use crate::tunnel::transport::{client_handshake, server_handshake, TransportStream, TransportOptions, udp};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::time::{Duration, Instant};
@@ -152,7 +152,7 @@ async fn run_handshake_test(protocol: &'static str, is_udp: bool) {
         let client_token = token_owned.clone();
         let client_task = tokio::spawn(async move {
             let socket = TcpStream::connect(format!("127.0.0.1:{}", port)).await.unwrap();
-            let mut client_stream = client_handshake(socket, &client_proto, &client_token, None).await.unwrap();
+            let mut client_stream = client_handshake(socket, &client_proto, &client_token, None, TransportOptions::default()).await.unwrap();
             
             // Write data
             client_stream.write_all(message_client_to_server).await.unwrap();
@@ -166,7 +166,7 @@ async fn run_handshake_test(protocol: &'static str, is_udp: bool) {
 
         // Server accept
         let (socket, _) = listener.accept().await.unwrap();
-        let mut server_stream = server_handshake(socket, &protocol_owned, &token_owned, None).await.unwrap();
+        let mut server_stream = server_handshake(socket, &protocol_owned, &token_owned, None, TransportOptions::default()).await.unwrap();
 
         // Read client message
         let mut read_buf = vec![0u8; message_client_to_server.len()];

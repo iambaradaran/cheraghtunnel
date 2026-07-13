@@ -599,6 +599,7 @@ fn generate_server_script(tunnel: &db::Tunnel) -> String {
     let port_hop_flag = if tunnel.port_hopping.unwrap_or(0) == 1 { "--port-hopping" } else { "" };
     let decoy = tunnel.decoy_url.clone().unwrap_or_else(|| "google.com".to_string());
     let api_port = 18000 + tunnel.id.unwrap_or(0) as u16;
+    let transport_opts_str = tunnel.transport_options.clone().unwrap_or_else(|| "{}".to_string());
 
     format!(
         r#"#!/bin/bash
@@ -630,7 +631,7 @@ Description=CheraghTunnel Server {id}
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/cheraghtunnel-{id} server -c {control_port} -p {public_port} -t '{token}' --protocol {protocol} --decoy '{decoy}' {port_hop_flag} --api-port {api_port}
+ExecStart=/usr/local/bin/cheraghtunnel-{id} server -c {control_port} -p {public_port} -t '{token}' --protocol {protocol} --decoy '{decoy}' {port_hop_flag} --api-port {api_port} --transport-options '{transport_options}'
 Restart=always
 RestartSec=2s
 User=root
@@ -651,12 +652,14 @@ systemctl start cheragh-server-{id}
         decoy = decoy,
         port_hop_flag = port_hop_flag,
         api_port = api_port,
+        transport_options = transport_opts_str,
     )
 }
 
 fn generate_client_script(tunnel: &db::Tunnel, iran_ip: &str) -> String {
     let port_hop_flag = if tunnel.port_hopping.unwrap_or(0) == 1 { "--port-hopping" } else { "" };
     let decoy = tunnel.decoy_url.clone().unwrap_or_else(|| "google.com".to_string());
+    let transport_opts_str = tunnel.transport_options.clone().unwrap_or_else(|| "{}".to_string());
     
     format!(
         r#"#!/bin/bash
@@ -688,7 +691,7 @@ Description=CheraghTunnel Client Node {id}
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/cheraghtunnel-{id} client -s {iran_ip} -c {control_port} -p {public_port} -l 127.0.0.1:{kharej_port} -t '{token}' --protocol {protocol} --tunnel-id {id} --decoy '{decoy}' {port_hop_flag}
+ExecStart=/usr/local/bin/cheraghtunnel-{id} client -s {iran_ip} -c {control_port} -p {public_port} -l 127.0.0.1:{kharej_port} -t '{token}' --protocol {protocol} --tunnel-id {id} --decoy '{decoy}' {port_hop_flag} --transport-options '{transport_options}'
 Restart=always
 RestartSec=2s
 User=root
@@ -710,6 +713,7 @@ systemctl start cheragh-node-{id}
         protocol = tunnel.protocol,
         decoy = decoy,
         port_hop_flag = port_hop_flag,
+        transport_options = transport_opts_str,
     )
 }
 

@@ -16,6 +16,39 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use futures::{Stream, Sink};
 use rand::Rng;
 use kcp_tokio::KcpStream;
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct TransportOptions {
+    #[serde(default)]
+    pub fragment_sni: bool,
+    #[serde(default = "default_fragment_size")]
+    pub fragment_size: usize,
+    #[serde(default)]
+    pub randomize_ua: bool,
+}
+
+fn default_fragment_size() -> usize {
+    5
+}
+
+const USER_AGENTS: &[&str] = &[
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+];
+
+fn get_user_agent(randomize: bool) -> &'static str {
+    if randomize {
+        let mut rng = rand::thread_rng();
+        USER_AGENTS[rng.gen_range(0..USER_AGENTS.len())]
+    } else {
+        USER_AGENTS[0]
+    }
+}
 
 // A adapter to wrap a WebSocketStream (which works on messages) into a byte-oriented AsyncRead/AsyncWrite stream.
 pub struct WsByteStream<S> {
@@ -1539,9 +1572,25 @@ pub async fn client_handshake(
     protocol: &str,
     token: &str,
     decoy: Option<String>,
+    opts: TransportOptions,
 ) -> Result<TransportStream, Box<dyn Error + Send + Sync>> {
     let _ = crate::common::network::optimize_socket(&socket);
-    let decoy_str = extract_domain(&decoy.unwrap_or_else(|| "google.com".to_string()));
+    
+    // Resolve multiple decoys (spraying)
+    let decoy_list: Vec<&str> = decoy.as_ref()
+        .map(|s| s.split(',').map(|x| x.trim()).filter(|x| !x.is_empty()).collect())
+        .unwrap_or_default();
+        
+    let selected_decoy = if decoy_list.is_empty() {
+        "google.com".to_string()
+    } else {
+        let mut rng = rand::thread_rng();
+        let idx = rng.gen_range(0..decoy_list.len());
+        decoy_list[idx].to_string()
+    };
+    
+    let decoy_str = extract_domain(&selected_decoy);
+    
     match protocol {
         "beam" | "tcpmux" | "photon" | "quantummux" => {
             use sha2::{Sha256, Digest};
@@ -1575,15 +1624,17 @@ pub async fn client_handshake(
             use std::time::{SystemTime, UNIX_EPOCH};
             let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
             let hash = format!("{:x}", Sha256::digest(format!("{}{}", token, timestamp).as_bytes()));
+            
+            let ua = get_user_agent(opts.randomize_ua);
             let req = format!(
                 "POST /api/v1/telemetry HTTP/1.1\r\n\
                  Host: {}\r\n\
-                 User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n\
+                 User-Agent: {}\r\n\
                  Content-Type: application/octet-stream\r\n\
                  Transfer-Encoding: chunked\r\n\
                  Cookie: __cf_session_id={}-{}\r\n\
                  Connection: keep-alive\r\n\r\n",
-                 decoy_str, hash, timestamp
+                 decoy_str, ua, hash, timestamp
             );
             socket.write_all(req.as_bytes()).await?;
             socket.flush().await?;
@@ -1596,13 +1647,16 @@ pub async fn client_handshake(
             use std::time::{SystemTime, UNIX_EPOCH};
             let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
             let hash = format!("{:x}", Sha256::digest(format!("{}{}", token, timestamp).as_bytes()));
+            
+            let ua = get_user_agent(opts.randomize_ua);
             let req = format!(
                 "GET /tunnel HTTP/1.1\r\n\
                  Host: {}\r\n\
+                 User-Agent: {}\r\n\
                  Upgrade: websocket\r\n\
                  Connection: Upgrade\r\n\
                  Cookie: __cf_session_id={}-{}\r\n\r\n",
-                 decoy_str, hash, timestamp
+                 decoy_str, ua, hash, timestamp
             );
             socket.write_all(req.as_bytes()).await?;
             socket.flush().await?;
@@ -1687,8 +1741,20 @@ pub async fn client_handshake(
         "mirage" | "realitymux" | "spectre" => {
             // Write standard TLS ClientHello spoofing the decoy domain
             let hello = build_tls_client_hello(&decoy_str, token);
-            socket.write_all(&hello).await?;
-            socket.flush().await?;
+            
+            if opts.fragment_sni {
+                let split = std::cmp::min(opts.fragment_size, hello.len());
+                socket.write_all(&hello[..split]).await?;
+                socket.flush().await?;
+                tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+                if split < hello.len() {
+                    socket.write_all(&hello[split..]).await?;
+                    socket.flush().await?;
+                }
+            } else {
+                socket.write_all(&hello).await?;
+                socket.flush().await?;
+            }
             
             let rtt_stream = ZeroRttStream::new(socket, b"ServerHello".to_vec());
             // Apply packet padding obfuscation
@@ -1794,15 +1860,39 @@ fn make_ws_auth_callback(
 
 /// Server handshake logic to authenticate client and wrap standard TcpStream
 #[allow(clippy::result_large_err)]
+
 pub async fn server_handshake(
     mut socket: TcpStream,
     protocol: &str,
     token: &str,
     decoy: Option<String>,
+    _opts: TransportOptions,
 ) -> Result<TransportStream, Box<dyn Error + Send + Sync>> {
     let _ = crate::common::network::optimize_socket(&socket);
 
-    match protocol {
+    // Let's inspect the first 5 bytes to determine the protocol dynamically!
+    let mut peek_buf = [0u8; 5];
+    let n = socket.peek(&mut peek_buf).await.unwrap_or(0);
+    
+    // Determine the actual protocol format
+    let actual_protocol = if ["spectre", "mirage", "nirvana", "beam"].contains(&protocol) {
+        if n >= 1 && peek_buf[0] == 0x16 {
+            // TLS ClientHello -> Mirage / Spectre
+            "spectre"
+        } else if n >= 4 && &peek_buf[..4] == b"POST" {
+            // HTTP Request -> Nirvana
+            "nirvana"
+        } else if n >= 4 && &peek_buf[..4] == b"Cher" {
+            // Cheragh-Auth-HMAC -> Beam
+            "beam"
+        } else {
+            protocol
+        }
+    } else {
+        protocol
+    };
+
+    match actual_protocol {
         "beam" | "tcpmux" | "photon" | "quantummux" => {
             perform_server_handshake_check(&mut socket, token).await?;
             Ok(TransportStream::Tcp(socket))
@@ -2031,13 +2121,13 @@ pub async fn server_handshake(
             } else {
                 // Active prober: proxy transparently to decoy site port 443
                 let decoy_target = decoy.unwrap_or_else(|| "microsoft.com".to_string());
-                let decoy_host = if decoy_target.starts_with("http://") {
-                    decoy_target.trim_start_matches("http://").to_string()
-                } else if decoy_target.starts_with("https://") {
-                    decoy_target.trim_start_matches("https://").to_string()
+                let decoy_list: Vec<&str> = decoy_target.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                let decoy_host = if decoy_list.is_empty() {
+                    "microsoft.com".to_string()
                 } else {
-                    decoy_target
+                    decoy_list[0].to_string()
                 };
+                let decoy_host = extract_domain(&decoy_host);
                 
                 let decoy_addr = format!("{}:443", decoy_host);
                 println!("[SERVER] Active probe / invalid ClientHello detected. Proxying to: {}", decoy_addr);
@@ -2045,6 +2135,9 @@ pub async fn server_handshake(
                 if let Ok(mut decoy_conn) = TcpStream::connect(&decoy_addr).await {
                     let _ = decoy_conn.write_all(&client_hello).await;
                     let _ = tokio::io::copy_bidirectional(&mut socket, &mut decoy_conn).await;
+                } else {
+                    // Fallback to local-iis to prevent TCP reset/hang signature
+                    let _ = send_decoy_response(&mut socket, Some("local-iis".to_string())).await;
                 }
                 
                 Err("Reality probe proxied successfully".into())
@@ -2106,7 +2199,39 @@ where
         let local_path = format!("static/decoys/{}.html", domain);
         let path = std::path::Path::new(&local_path);
         
-        if path.exists() {
+        if d == "local-iis" {
+            status = 200;
+            headers = vec![
+                ("Content-Type".to_string(), "text/html; charset=UTF-8".to_string()),
+                ("Connection".to_string(), "close".to_string()),
+                ("Server".to_string(), "Microsoft-IIS/10.0".to_string()),
+                ("X-Powered-By".to_string(), "ASP.NET".to_string()),
+            ];
+            body = b"<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">\n\
+                     <html xmlns=\"http://www.w3.org/1999/xhtml\">\n\
+                     <head>\n\
+                     <meta http-equiv=\"Content-Type\" content=\"text/html; charset=iso-8859-1\" />\n\
+                     <title>IIS Windows Server</title>\n\
+                     <style type=\"text/css\">\n\
+                     <!--\n\
+                     body {color:#000000;background-color:#FFFFFF;margin:0;font-family:Verdana,Geneva,sans-serif;}\n\
+                     #container {width:600px;margin-left:auto;margin-right:auto;padding:100px 0 0 0;}\n\
+                     h1 {font-size:2.2em;font-weight:normal;color:#006699;margin:0 0 5px 0;}\n\
+                     h2 {font-size:1.2em;font-weight:normal;color:#333333;margin:0 0 20px 0;}\n\
+                     a:link, a:visited {color:#007ebb;text-decoration:none;}\n\
+                     a:hover {text-decoration:underline;}\n\
+                     -->\n\
+                     </style>\n\
+                     </head>\n\
+                     <body>\n\
+                     <div id=\"container\">\n\
+                     <h1>Welcome</h1>\n\
+                     <h2>Internet Information Services (IIS)</h2>\n\
+                     <p>This page is served by Microsoft-IIS/10.0 web server. If you are the administrator, configure the site.</p>\n\
+                     </div>\n\
+                     </body>\n\
+                     </html>".to_vec();
+        } else if path.exists() {
             if let Ok(content) = std::fs::read(path) {
                 status = 200;
                 headers = vec![
@@ -2186,7 +2311,9 @@ where
         format!("{}, {:02} {} {} {:02}:{:02}:{:02} GMT", day_of_week, mday, months[month_idx], year, hour, min, sec)
     };
 
-    headers.push(("Server".to_string(), "nginx/1.22.0 (Ubuntu)".to_string()));
+    if !headers.iter().any(|(k, _)| k.to_lowercase() == "server") {
+        headers.push(("Server".to_string(), "nginx/1.22.0 (Ubuntu)".to_string()));
+    }
     headers.push(("Date".to_string(), date_str));
 
     // Active probing packet size randomization padding

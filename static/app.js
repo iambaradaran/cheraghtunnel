@@ -1,4 +1,4 @@
-const DECOY_PROTOCOLS = ['aura', 'nova', 'glimmer', 'beacon', 'mirage'];
+const DECOY_PROTOCOLS = ['aura', 'nova', 'glimmer', 'beacon', 'mirage', 'spectre'];
 document.addEventListener('DOMContentLoaded', () => {
     // Session Auth State check
     const token = localStorage.getItem('cheragh_session');
@@ -86,6 +86,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const createForm = document.getElementById('create-tunnel-form');
     createForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+        const dynamicOpts = JSON.parse(extractDynamicOptions('dynamic-options-container') || '{}');
+        dynamicOpts.fragment_sni = document.getElementById('fragment-sni').checked;
+        dynamicOpts.fragment_size = parseInt(document.getElementById('fragment-size').value || 5);
+        dynamicOpts.randomize_ua = document.getElementById('randomize-ua').checked;
+
         const payload = {
             name: document.getElementById('tunnel-name').value,
             iran_node_id: parseInt(document.getElementById('tunnel-iran-select').value) || null,
@@ -98,7 +103,7 @@ document.addEventListener('DOMContentLoaded', () => {
             decoy_url: DECOY_PROTOCOLS.includes(document.getElementById('tunnel-protocol').value)
                 ? document.getElementById('decoy-url').value || "google.com"
                 : null,
-            transport_options: extractDynamicOptions('dynamic-options-container'),
+            transport_options: JSON.stringify(dynamicOpts),
             backup_ips: document.getElementById('backup-ips').value || null,
             port_hopping: document.getElementById('tunnel-hopping').checked ? 1 : 0,
             quota_limit_bytes: Math.round(parseFloat(document.getElementById('quota-limit').value || 0) * 1024 * 1024 * 1024),
@@ -478,6 +483,17 @@ async function showEditModal(id) {
         if (t.transport_options) {
             try { initialOpts = JSON.parse(t.transport_options); } catch (e) {}
         }
+        
+        if (initialOpts) {
+            document.getElementById('edit-fragment-sni').checked = !!initialOpts.fragment_sni;
+            document.getElementById('edit-fragment-size').value = initialOpts.fragment_size !== undefined ? initialOpts.fragment_size : 5;
+            document.getElementById('edit-randomize-ua').checked = !!initialOpts.randomize_ua;
+        } else {
+            document.getElementById('edit-fragment-sni').checked = false;
+            document.getElementById('edit-fragment-size').value = 5;
+            document.getElementById('edit-randomize-ua').checked = false;
+        }
+
         renderDynamicOptions(t.protocol, 'edit-dynamic-options-container', initialOpts);
         document.getElementById('edit-tunnel-token').value = t.token;
         document.getElementById('edit-decoy-url').value = t.decoy_url || '';
@@ -531,6 +547,11 @@ document.addEventListener('DOMContentLoaded', () => {
     editForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         const id = document.getElementById('edit-tunnel-id').value;
+        const dynamicOpts = JSON.parse(extractDynamicOptions('edit-dynamic-options-container') || '{}');
+        dynamicOpts.fragment_sni = document.getElementById('edit-fragment-sni').checked;
+        dynamicOpts.fragment_size = parseInt(document.getElementById('edit-fragment-size').value || 5);
+        dynamicOpts.randomize_ua = document.getElementById('edit-randomize-ua').checked;
+
         const payload = {
             id: parseInt(id),
             name: document.getElementById('edit-tunnel-name').value,
@@ -544,7 +565,7 @@ document.addEventListener('DOMContentLoaded', () => {
             decoy_url: DECOY_PROTOCOLS.includes(document.getElementById('edit-tunnel-protocol').value)
                 ? document.getElementById('edit-decoy-url').value || "google.com"
                 : null,
-            transport_options: extractDynamicOptions('edit-dynamic-options-container'),
+            transport_options: JSON.stringify(dynamicOpts),
             backup_ips: document.getElementById('edit-backup-ips').value || null,
             port_hopping: document.getElementById('edit-tunnel-hopping').checked ? 1 : 0,
             quota_limit_bytes: Math.round(parseFloat(document.getElementById('edit-quota-limit').value || 0) * 1024 * 1024 * 1024),
@@ -803,4 +824,17 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 });
+
+// Accordion toggle helper
+function toggleAccordion(header) {
+    const accordion = header.parentElement;
+    const content = accordion.querySelector('.accordion-content');
+    accordion.classList.toggle('open');
+    if (content.style.display === 'block') {
+        content.style.display = 'none';
+    } else {
+        content.style.display = 'block';
+    }
+}
+window.toggleAccordion = toggleAccordion;
 

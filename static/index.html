@@ -170,33 +170,65 @@
                         <input type="number" id="kharej-port" required placeholder="443" min="1" max="65535">
                     </div>
                 </div>
+
                 <div class="form-row">
                     <div class="form-group">
-                        <label for="quota-limit">Quota Limit (GB - 0 for unlimited)</label>
-                        <input type="number" id="quota-limit" value="0" min="0" step="0.1" placeholder="e.g. 100">
+                        <label for="tunnel-token">Auth Token</label>
+                        <div style="display: flex; gap: 10px;">
+                            <input type="text" id="tunnel-token" required style="flex: 1;">
+                            <button type="button" id="gen-token-btn" class="btn btn-secondary btn-small" style="margin-top: 0; width: auto;">Generate</button>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label for="speed-limit">Speed Limit (KB/s - 0 for unlimited)</label>
-                        <input type="number" id="speed-limit" value="0" min="0" placeholder="e.g. 5000">
+                </div>
+
+                <!-- Advanced Settings Accordion -->
+                <div class="advanced-settings-accordion">
+                    <div class="accordion-header" onclick="toggleAccordion(this)">
+                        <h4>⚙️ Advanced Settings</h4>
+                        <span class="accordion-arrow">▼</span>
+                    </div>
+                    <div class="accordion-content" style="display: none; padding-top: 15px;">
+                        <div class="form-group" id="decoy-group" style="display: none; margin-bottom: 20px;">
+                            <label for="decoy-url">Decoy Domain(s) (Comma-separated for spraying)</label>
+                            <input type="text" id="decoy-url" placeholder="e.g. microsoft.com, soft98.ir, wikipedia.org">
+                        </div>
+                        <div class="form-row" style="margin-bottom: 20px;">
+                            <div class="form-group">
+                                <label for="quota-limit">Quota Limit (GB - 0 for unlimited)</label>
+                                <input type="number" id="quota-limit" value="0" min="0" step="0.1" placeholder="e.g. 100">
+                            </div>
+                            <div class="form-group">
+                                <label for="speed-limit">Speed Limit (KB/s - 0 for unlimited)</label>
+                                <input type="number" id="speed-limit" value="0" min="0" placeholder="e.g. 5000">
+                            </div>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 20px;">
+                            <label for="backup-ips">Backup Iran IPs (Comma separated - Optional)</label>
+                            <input type="text" id="backup-ips" placeholder="e.g. 192.168.1.5, 10.0.0.8">
+                        </div>
+                        <div class="form-row" style="margin-bottom: 20px;">
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="fragment-sni" style="width: auto;">
+                                <label for="fragment-sni" style="margin: 0; font-size: 0.9rem;">Enable SNI Fragmentation</label>
+                            </div>
+                            <div class="form-group">
+                                <label for="fragment-size">SNI Fragment Size (bytes)</label>
+                                <input type="number" id="fragment-size" value="5" min="1" max="100">
+                            </div>
+                        </div>
+                        <div class="form-row" style="margin-bottom: 10px;">
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="randomize-ua" style="width: auto;">
+                                <label for="randomize-ua" style="margin: 0; font-size: 0.9rem;">Randomize User-Agent</label>
+                            </div>
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="tunnel-hopping" style="width: auto;">
+                                <label for="tunnel-hopping" style="margin: 0; font-size: 0.9rem;">Enable Port Hopping</label>
+                            </div>
+                        </div>
                     </div>
                 </div>
-                <div class="form-group">
-                    <label for="backup-ips">Backup Iran IPs (Comma separated - Optional)</label>
-                    <input type="text" id="backup-ips" placeholder="e.g. 192.168.1.5, 10.0.0.8">
-                </div>
-                <div class="form-group">
-                    <label for="tunnel-token">Auth Token</label>
-                    <input type="text" id="tunnel-token" required>
-                    <button type="button" id="gen-token-btn" class="btn btn-secondary btn-small">Generate Random</button>
-                </div>
-                <div class="form-group" id="decoy-group" style="display: none;">
-                    <label for="decoy-url">Decoy Website URL / SNI (WSS/TLS/Mirage/Aura)</label>
-                    <input type="text" id="decoy-url" placeholder="e.g. google.com">
-                </div>
-                <div class="form-row" style="align-items: center; margin-bottom: 15px; margin-top: 10px;">
-                    <input type="checkbox" id="tunnel-hopping" style="width: auto; margin-right: 10px;">
-                    <label for="tunnel-hopping" style="margin: 0;">Enable Dynamic Port Hopping (Random Port Hopping)</label>
-                </div>
+
                 <div class="modal-actions">
                     <button type="button" id="close-create-modal" class="btn btn-secondary">Cancel</button>
                     <button type="submit" class="btn btn-primary">Create Tunnel</button>
@@ -259,44 +291,72 @@
                     <label for="edit-kharej-port">Kharej Port (Target Local Port)</label>
                     <input type="number" id="edit-kharej-port" required placeholder="e.g. 8080" min="1" max="65535">
                 </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="edit-quota-limit">Quota Limit (GB - 0 for unlimited)</label>
-                        <input type="number" id="edit-quota-limit" value="0" min="0" step="0.1" placeholder="e.g. 100">
-                    </div>
-                    <div class="form-group">
-                        <label for="edit-speed-limit">Speed Limit (KB/s - 0 for unlimited)</label>
-                        <input type="number" id="edit-speed-limit" value="0" min="0" placeholder="e.g. 5000">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label for="edit-backup-ips">Backup Iran IPs (Comma separated - Optional)</label>
-                    <input type="text" id="edit-backup-ips" placeholder="e.g. 192.168.1.5, 10.0.0.8">
-                </div>
-                <div id="edit-dynamic-options-container" class="dynamic-options-container">
-                    <!-- Dynamic protocol-specific options will be injected here via JS -->
-                </div>
-                <div class="form-group" id="edit-decoy-group" style="display: none;">
-                    <label for="edit-decoy-url">Decoy Website URL / SNI (WSS/TLS/Mirage/Aura)</label>
-                    <input type="text" id="edit-decoy-url" placeholder="e.g. google.com">
-                </div>
-                <div class="form-row" style="align-items: center; margin-bottom: 15px; margin-top: 10px;">
-                    <input type="checkbox" id="edit-tunnel-hopping" style="width: auto; margin-right: 10px;">
-                    <label for="edit-tunnel-hopping" style="margin: 0;">Enable Dynamic Port Hopping (Random Port Hopping)</label>
-                </div>
+
                 <div class="form-group">
                     <label for="edit-tunnel-token">Auth Token</label>
                     <div style="display: flex; gap: 10px;">
                         <input type="text" id="edit-tunnel-token" required style="flex: 1;">
-                        <button type="button" id="edit-gen-token-btn" class="btn btn-secondary btn-small">Generate</button>
+                        <button type="button" id="edit-gen-token-btn" class="btn btn-secondary btn-small" style="margin-top: 0; width: auto;">Generate</button>
                     </div>
                 </div>
+
+                <div id="edit-dynamic-options-container" class="dynamic-options-container">
+                    <!-- Dynamic protocol-specific options will be injected here via JS -->
+                </div>
+
+                <!-- Advanced Settings Accordion -->
+                <div class="advanced-settings-accordion">
+                    <div class="accordion-header" onclick="toggleAccordion(this)">
+                        <h4>⚙️ Advanced Settings</h4>
+                        <span class="accordion-arrow">▼</span>
+                    </div>
+                    <div class="accordion-content" style="display: none; padding-top: 15px;">
+                        <div class="form-group" id="edit-decoy-group" style="display: none; margin-bottom: 20px;">
+                            <label for="edit-decoy-url">Decoy Domain(s) (Comma-separated for spraying)</label>
+                            <input type="text" id="edit-decoy-url" placeholder="e.g. microsoft.com, soft98.ir, wikipedia.org">
+                        </div>
+                        <div class="form-row" style="margin-bottom: 20px;">
+                            <div class="form-group">
+                                <label for="edit-quota-limit">Quota Limit (GB - 0 for unlimited)</label>
+                                <input type="number" id="edit-quota-limit" value="0" min="0" step="0.1" placeholder="e.g. 100">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-speed-limit">Speed Limit (KB/s - 0 for unlimited)</label>
+                                <input type="number" id="edit-speed-limit" value="0" min="0" placeholder="e.g. 5000">
+                            </div>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 20px;">
+                            <label for="edit-backup-ips">Backup Iran IPs (Comma separated - Optional)</label>
+                            <input type="text" id="edit-backup-ips" placeholder="e.g. 192.168.1.5, 10.0.0.8">
+                        </div>
+                        <div class="form-row" style="margin-bottom: 20px;">
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="edit-fragment-sni" style="width: auto;">
+                                <label for="edit-fragment-sni" style="margin: 0; font-size: 0.9rem;">Enable SNI Fragmentation</label>
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-fragment-size">SNI Fragment Size (bytes)</label>
+                                <input type="number" id="edit-fragment-size" value="5" min="1" max="100">
+                            </div>
+                        </div>
+                        <div class="form-row" style="margin-bottom: 10px;">
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="edit-randomize-ua" style="width: auto;">
+                                <label for="edit-randomize-ua" style="margin: 0; font-size: 0.9rem;">Randomize User-Agent</label>
+                            </div>
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="edit-tunnel-hopping" style="width: auto;">
+                                <label for="edit-tunnel-hopping" style="margin: 0; font-size: 0.9rem;">Enable Port Hopping</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="modal-actions">
                     <button type="button" id="close-edit-modal" class="btn btn-secondary">Cancel</button>
                     <button type="submit" class="btn btn-primary">Save Changes</button>
                 </div>
             </form>
-        </div>
     </div>
 
     <!-- Manage Nodes Modal -->
@@ -408,6 +468,6 @@
         </div>
     </div>
 
-    <script src="/app.js?v=1.14.8"></script>
+    <script src="/app.js?v=1.14.9"></script>
 </body>
 </html>

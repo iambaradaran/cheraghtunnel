@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
 use crate::tunnel::multiplex::{connect_to_local, pipe_streams_monitored};
-use crate::tunnel::transport::{TransportStream, server_handshake, client_handshake};
+use crate::tunnel::transport::{TransportStream, server_handshake, client_handshake, TransportOptions};
 use crate::tunnel::transport::udp::{UdpVirtualStream, UdpMultiplexer, UdpMode};
 use tokio_util::compat::{TokioAsyncReadCompatExt, FuturesAsyncReadCompatExt};
 use futures::StreamExt;
@@ -64,6 +64,7 @@ fn spawn_protocol_listener(
     token: String,
     decoy: Option<String>,
     control_tx: mpsc::Sender<TransportStream>,
+    opts: TransportOptions,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let token_owned = token;
@@ -160,9 +161,10 @@ fn spawn_protocol_listener(
                         let token_clone = token_owned.clone();
                         let decoy_clone = decoy_owned.clone();
                         let control_tx_clone = control_tx.clone();
+                        let opts_clone = opts.clone();
 
                         tokio::spawn(async move {
-                            match server_handshake(control_socket, &proto_clone, &token_clone, decoy_clone).await {
+                            match server_handshake(control_socket, &proto_clone, &token_clone, decoy_clone, opts_clone).await {
                                 Ok(s) => {
                                     println!("[SERVER] Authentic client connected from: {} on port {}", addr, control_port);
                                     if control_tx_clone.send(s).await.is_err() {
@@ -196,11 +198,16 @@ pub async fn run_server(
     active_controls: Arc<tokio::sync::Mutex<Vec<yamux::Control>>>,
     port_hopping: bool,
     api_port: Option<u16>,
+    transport_options: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     println!(
         "[SERVER] Launching protocol: '{}' on control port: {}, public port: {}, Port Hopping: {}",
         protocol, control_port, public_port, port_hopping
     );
+
+    let opts: TransportOptions = transport_options
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
 
     let public_addr: std::net::SocketAddr = format!("0.0.0.0:{}", public_port).parse()?;
     let public_listener = Arc::new(crate::common::network::bind_listener(public_addr)?);
@@ -276,13 +283,13 @@ pub async fn run_server(
         });
     }
 
-    // Spawn task to accept and authenticate control connections from client nodes.
-    // Wrap in LoopGuard so the task is auto-aborted when run_server returns.
-    let _accept_guard = LoopGuard {
+
+    let opts_clone = opts.clone();
+    let _listener_guard = LoopGuard {
         handle: Some(tokio::spawn(async move {
             if port_hopping {
-                let mut current_epoch = 0u64;
-                let mut active_listeners: std::collections::HashMap<u16, tokio::task::JoinHandle<()>> = std::collections::HashMap::new();
+                let mut current_epoch = 0;
+                let mut active_listeners: HashMap<u16, tokio::task::JoinHandle<()>> = HashMap::new();
 
                 loop {
                     let epoch = std::time::SystemTime::now()
@@ -297,12 +304,12 @@ pub async fn run_server(
 
                         // Start p_curr if not active
                         active_listeners.entry(p_curr).or_insert_with(|| {
-                            spawn_protocol_listener(p_curr, protocol_owned.clone(), token_owned.clone(), decoy_owned.clone(), control_tx.clone())
+                            spawn_protocol_listener(p_curr, protocol_owned.clone(), token_owned.clone(), decoy_owned.clone(), control_tx.clone(), opts_clone.clone())
                         });
 
                         // Start p_next if not active
                         active_listeners.entry(p_next).or_insert_with(|| {
-                            spawn_protocol_listener(p_next, protocol_owned.clone(), token_owned.clone(), decoy_owned.clone(), control_tx.clone())
+                            spawn_protocol_listener(p_next, protocol_owned.clone(), token_owned.clone(), decoy_owned.clone(), control_tx.clone(), opts_clone.clone())
                         });
 
                         // Evict old listeners
@@ -319,7 +326,7 @@ pub async fn run_server(
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             } else {
-                let handle = spawn_protocol_listener(control_port, protocol_owned, token_owned, decoy_owned, control_tx);
+                let handle = spawn_protocol_listener(control_port, protocol_owned, token_owned, decoy_owned, control_tx, opts_clone);
                 let _ = handle.await;
             }
         })),
@@ -590,7 +597,12 @@ pub async fn run_client(
     tunnel_id: i64,
     decoy: Option<String>,
     port_hopping: bool,
+    transport_options: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
+    let opts: TransportOptions = transport_options
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
     let ips: Vec<&str> = server_ips
         .split(',')
         .map(|s| s.trim())
@@ -614,12 +626,28 @@ pub async fn run_client(
         let token_clone = token.to_string();
         let protocol_clone = protocol.to_string();
         let decoy_clone = decoy.clone();
+        let opts_clone = opts.clone();
 
         let handle = tokio::spawn(async move {
+            let mut protocol_list = vec![protocol_clone.clone()];
+            if protocol_clone == "spectre" || protocol_clone == "mirage" {
+                protocol_list.push("mirage".to_string());
+                protocol_list.push("nirvana".to_string());
+                protocol_list.push("beam".to_string());
+                let mut unique = Vec::new();
+                for p in protocol_list {
+                    if !unique.contains(&p) {
+                        unique.push(p);
+                    }
+                }
+                protocol_list = unique;
+            }
+            let mut proto_index = 0;
             let mut ip_index = 0;
             let mut dynamic_mtu = 1350;
 
             loop {
+                let current_protocol = &protocol_list[proto_index % protocol_list.len()];
                 let current_ip = &ips_clone[ip_index % ips_clone.len()];
                 let active_control_port = if port_hopping {
                     let epoch = std::time::SystemTime::now()
@@ -632,12 +660,12 @@ pub async fn run_client(
                 };
 
                 println!(
-                    "[CLIENT-WORKER-{}] Connecting to Iran Server {}:{} via '{}' (Failover index: {})...",
-                    worker_id, current_ip, active_control_port, protocol_clone, ip_index
+                    "[CLIENT-WORKER-{}] Connecting to Iran Server {}:{} via '{}' (Failover index: {}, Protocol index: {})...",
+                    worker_id, current_ip, active_control_port, current_protocol, ip_index, proto_index
                 );
                 let control_addr = format!("{}:{}", current_ip, active_control_port);
 
-                let control_socket = if is_faketcp_protocol(&protocol_clone) {
+                let control_socket = if is_faketcp_protocol(current_protocol) {
                     println!("[CLIENT-WORKER-{}] Connecting via FakeTCP (KCP) to {} with MTU {}...", worker_id, control_addr, dynamic_mtu);
                     let mut config = kcp_tokio::KcpConfig::new().turbo_mode().stream_mode(true);
                     config.snd_wnd = 2048;
@@ -655,6 +683,8 @@ pub async fn run_client(
                             } else {
                                 eprintln!("[CLIENT-WORKER-{}] FakeTCP KCP authentication/upgrade failed on server {}", worker_id, current_ip);
                                 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                                ip_index += 1;
+                                proto_index += 1;
                                 continue;
                             }
                         }
@@ -662,10 +692,12 @@ pub async fn run_client(
                             eprintln!("[CLIENT-WORKER-{}] Failed to establish FakeTCP KCP connection: {}. Calibrating PMTUD...", worker_id, e);
                             dynamic_mtu = if dynamic_mtu > 1200 { dynamic_mtu - 50 } else { 1350 };
                             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                            ip_index += 1;
+                            proto_index += 1;
                             continue;
                         }
                     }
-                } else if is_udp_protocol(&protocol_clone) {
+                } else if is_udp_protocol(current_protocol) {
                     let socket = match UdpSocket::bind("0.0.0.0:0").await {
                         Ok(s) => s,
                         Err(e) => {
@@ -678,12 +710,13 @@ pub async fn run_client(
                         eprintln!("[CLIENT-WORKER-{}] Failed to connect UDP socket to {}:{}: {}", worker_id, current_ip, active_control_port, e);
                         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                         ip_index += 1;
+                        proto_index += 1;
                         continue;
                     }
                     let socket = Arc::new(socket);
                     let (tx, rx) = mpsc::channel(1024);
                     
-                    let mode = get_udp_mode(&protocol_clone);
+                    let mode = get_udp_mode(current_protocol);
                     let peer_addr = match format!("{}:{}", current_ip, active_control_port).parse() {
                         Ok(addr) => addr,
                         Err(e) => {
@@ -728,6 +761,7 @@ pub async fn run_client(
                             eprintln!("[CLIENT-WORKER-{}] UDP connection handshake timeout with {}", worker_id, current_ip);
                             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                             ip_index += 1;
+                            proto_index += 1;
                             continue;
                         }
 
@@ -735,6 +769,7 @@ pub async fn run_client(
                             eprintln!("[CLIENT-WORKER-{}] UDP authentication/upgrade failed on server {}: {}", worker_id, current_ip, e);
                             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                             ip_index += 1;
+                            proto_index += 1;
                             continue;
                         }
                     } else {
@@ -746,6 +781,7 @@ pub async fn run_client(
                             eprintln!("[CLIENT-WORKER-{}] Ray magic handshake send failed: {}", worker_id, e);
                             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                             ip_index += 1;
+                            proto_index += 1;
                             continue;
                         }
                         // Mark client handshake done immediately so that server reply packets
@@ -769,11 +805,12 @@ pub async fn run_client(
                             );
                             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                             ip_index += 1;
+                            proto_index += 1;
                             continue;
                         }
                     };
 
-                    match client_handshake(tcp_socket, &protocol_clone, &token_clone, decoy_clone.clone()).await {
+                    match client_handshake(tcp_socket, current_protocol, &token_clone, decoy_clone.clone(), opts_clone.clone()).await {
                         Ok(s) => s,
                         Err(e) => {
                             eprintln!(
@@ -782,12 +819,13 @@ pub async fn run_client(
                             );
                             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                             ip_index += 1;
+                            proto_index += 1;
                             continue;
                         }
                     }
                 };
 
-                println!("[CLIENT-WORKER-{}] Handshake succeeded over '{}'", worker_id, protocol_clone);
+                println!("[CLIENT-WORKER-{}] Handshake succeeded over '{}'", worker_id, current_protocol);
                 println!("[CLIENT-WORKER-{}] Establishing Yamux Multiplexer Session...", worker_id);
 
                 let mut cfg = yamux::Config::default();

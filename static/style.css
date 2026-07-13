@@ -672,3 +672,92 @@ td {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.3; }
 }
+
+/* Advanced Settings Accordion Styling */
+.advanced-settings-accordion {
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.01);
+    margin-bottom: 20px;
+    overflow: hidden;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.accordion-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 20px;
+    background: rgba(255, 255, 255, 0.03);
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.2s;
+}
+
+.accordion-header:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.accordion-header h4 {
+    margin: 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.accordion-arrow {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    transition: transform 0.3s ease;
+}
+
+.advanced-settings-accordion.open {
+    border-color: rgba(0, 240, 255, 0.2);
+    box-shadow: 0 0 10px rgba(0, 240, 255, 0.05);
+}
+
+.advanced-settings-accordion.open .accordion-arrow {
+    transform: rotate(180deg);
+    color: var(--color-cyan);
+}
+
+.accordion-content {
+    padding: 20px;
+    border-top: 1px solid var(--border-color);
+    background: rgba(0, 0, 0, 0.12);
+}
+
+/* Custom transitions/animations for premium modal feels */
+.modal-overlay {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease-out;
+}
+
+.modal-overlay[style*="display: flex"] {
+    opacity: 1 !important;
+    pointer-events: auto;
+}
+
+.modal-card {
+    transform: translateY(25px) scale(0.97);
+    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.modal-overlay[style*="display: flex"] .modal-card {
+    transform: translateY(0) scale(1) !important;
+}
+
+/* Premium table hovers & shadow card highlights */
+tr:hover {
+    background: rgba(255, 255, 255, 0.02) !important;
+}
+
+.glass-card:hover {
+    border-color: rgba(255, 159, 28, 0.15);
+    box-shadow: 0 12px 40px 0 rgba(255, 159, 28, 0.05);
+}
+
