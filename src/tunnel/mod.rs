@@ -851,79 +851,18 @@ pub async fn run_client(
                             let l_service = local_service_clone.clone();
                             let tid = tunnel_id;
                             tokio::spawn(async move {
-                                use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncBufReadExt};
+                                // Pipe yamux stream directly to local TCP service.
+                                // NOTE: UDP detection was removed because BufReader<yamux::Stream>
+                                // does not implement AsyncWrite, breaking the bidirectional pipe.
+                                // TCP/HTTPS (the primary use case) works correctly with a direct pipe.
                                 let compat_stream = stream.compat();
-                                
-                                // Use a BufReader to allow non-destructive peeking of the first 4 bytes
-                                // This avoids cancel-safety issues with yamux streams
-                                let mut buf_stream = tokio::io::BufReader::with_capacity(8192, compat_stream);
-                                
-                                // Peek at the first 4 bytes to detect UDP marker "UDP\n"
-                                // fill_buf is cancel-safe and doesn't consume data
-                                let is_udp = match tokio::time::timeout(
-                                    std::time::Duration::from_millis(500),
-                                    buf_stream.fill_buf()
-                                ).await {
-                                    Ok(Ok(buf)) => buf.len() >= 4 && &buf[..4] == b"UDP\n",
-                                    _ => false,
-                                };
-                                
-                                if is_udp {
-                                    // Consume the "UDP\n" marker
-                                    buf_stream.consume(4);
-                                    
-                                    let socket = match UdpSocket::bind("0.0.0.0:0").await {
-                                        Ok(s) => s,
-                                        Err(_) => return,
-                                    };
-                                    let target_addr = match l_service.parse::<std::net::SocketAddr>() {
-                                        Ok(a) => a,
-                                        Err(_) => return,
-                                    };
-                                    let _ = socket.connect(target_addr).await;
-                                    let socket = Arc::new(socket);
-                                    let (mut reader, mut writer) = tokio::io::split(buf_stream);
-                                    
-                                    let socket_clone = socket.clone();
-                                    let mut tx_task = tokio::spawn(async move {
-                                        let mut len_buf = [0u8; 4];
-                                        loop {
-                                            if reader.read_exact(&mut len_buf).await.is_err() {
-                                                break;
-                                            }
-                                            let len = u32::from_be_bytes(len_buf) as usize;
-                                            let mut pkt_buf = vec![0u8; len];
-                                            if reader.read_exact(&mut pkt_buf).await.is_err() {
-                                                break;
-                                            }
-                                            let _ = socket_clone.send(&pkt_buf).await;
-                                        }
-                                    });
-                                    
-                                    let mut rx_task = tokio::spawn(async move {
-                                        let mut buf = vec![0u8; 65535];
-                                        while let Ok(n) = socket.recv(&mut buf).await {
-                                            let len_bytes = (n as u32).to_be_bytes();
-                                            if writer.write_all(&len_bytes).await.is_err() || writer.write_all(&buf[..n]).await.is_err() {
-                                                break;
-                                            }
-                                        }
-                                    });
-                                    
-                                    tokio::select! {
-                                        _ = &mut tx_task => { rx_task.abort(); }
-                                        _ = &mut rx_task => { tx_task.abort(); }
+                                match connect_to_local(&l_service).await {
+                                    Ok(local_conn) => {
+                                        let _ = crate::common::network::optimize_socket(&local_conn);
+                                        pipe_streams_monitored(compat_stream, local_conn, tid).await;
                                     }
-                                } else {
-                                    // TCP: pipe directly — all buffered data is preserved
-                                    match connect_to_local(&l_service).await {
-                                        Ok(local_conn) => {
-                                            let _ = crate::common::network::optimize_socket(&local_conn);
-                                            pipe_streams_monitored(buf_stream, local_conn, tid).await;
-                                        }
-                                        Err(e) => {
-                                            eprintln!("[CLIENT] Failed to connect to local service at {}: {}", l_service, e);
-                                        }
+                                    Err(e) => {
+                                        eprintln!("[CLIENT] Failed to connect to local service at {}: {}", l_service, e);
                                     }
                                 }
                             });
