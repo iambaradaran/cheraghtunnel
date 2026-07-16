@@ -340,7 +340,6 @@ pub async fn run_server(
                 println!("[SERVER] Establishing Yamux session for new client node in pool...");
                 let mut cfg = yamux::Config::default();
                 cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
-                cfg.set_heartbeat_interval(Some(std::time::Duration::from_secs(10)));
                 let max_buf = if let Ok(val) = std::env::var("YAMUX_MAX_BUFFER_MB") {
                     val.parse::<usize>().unwrap_or(16) * 1024 * 1024
                 } else {
@@ -831,7 +830,6 @@ pub async fn run_client(
 
                 let mut cfg = yamux::Config::default();
                 cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
-                cfg.set_heartbeat_interval(Some(std::time::Duration::from_secs(10)));
                 let max_buf = if let Ok(val) = std::env::var("YAMUX_MAX_BUFFER_MB") {
                     val.parse::<usize>().unwrap_or(16) * 1024 * 1024
                 } else {

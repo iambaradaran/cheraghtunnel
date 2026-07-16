@@ -13,8 +13,8 @@ pub fn optimize_socket(stream: &TcpStream) -> io::Result<()> {
     
     // 2. Configure aggressive keepalives to prevent ISP firewalls from dropping idle sessions
     let keepalive = TcpKeepalive::new()
-        .with_time(Duration::from_secs(20))
-        .with_interval(Duration::from_secs(5));
+        .with_time(Duration::from_secs(5))
+        .with_interval(Duration::from_secs(3));
     let _ = socket.set_tcp_keepalive(&keepalive);
     
 
