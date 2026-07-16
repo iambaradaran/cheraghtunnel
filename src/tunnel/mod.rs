@@ -363,6 +363,18 @@ pub async fn run_server(
                     println!("[SERVER] Client node Yamux session closed.");
                 });
                 
+                // Keepalive task: open + close a stream every 10s to prevent ISP idle timeout
+                let mut keepalive_ctrl = ctrl.clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                        match keepalive_ctrl.open_stream().await {
+                            Ok(stream) => { drop(stream); }
+                            Err(_) => { break; } // Connection dead, stop keepalive
+                        }
+                    }
+                });
+                
                 let mut pool = active_controls_clone.lock().await;
                 pool.push(ctrl);
                 println!("[SERVER] Node added to pool. Total active nodes: {}", pool.len());
@@ -843,7 +855,23 @@ pub async fn run_client(
                 cfg.set_max_buffer_size(max_buf);
                 cfg.set_receive_window(rx_win);
                 let conn = yamux::Connection::new(control_socket.compat(), cfg, yamux::Mode::Server);
+                let ctrl = conn.control();
+                
+                // Keepalive task: open + close a stream every 10s to prevent ISP idle timeout
+                let mut keepalive_ctrl = ctrl.clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                        match keepalive_ctrl.open_stream().await {
+                            Ok(stream) => { drop(stream); }
+                            Err(_) => { break; } // Connection dead, stop keepalive
+                        }
+                    }
+                });
+                
+                let _ = ctrl; // drop local ctrl, keepalive_ctrl is moved above
                 let mut incoming = Box::pin(yamux::into_stream(conn));
+
 
                 while let Some(stream_res) = incoming.next().await {
                     match stream_res {
