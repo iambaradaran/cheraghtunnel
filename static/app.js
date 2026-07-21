@@ -329,8 +329,9 @@ async function loadTunnels() {
             const tr = document.createElement('tr');
             
             // Format status badge
-            const statusClass = t.status === 'active' ? 'active' : (t.status === 'deploying' ? 'deploying' : (t.status === 'error' ? 'error' : 'inactive'));
-            const statusText = t.status.toUpperCase();
+            const statusClass = t.status === 'active' ? 'active' : (t.status === 'deploying' ? 'deploying' : (t.status === 'error' || t.status === 'unreachable' ? 'error' : 'inactive'));
+            const pingText = (t.status === 'active' && t.e2e_latency_ms && t.e2e_latency_ms < 900) ? ` (${Math.round(t.e2e_latency_ms)}ms)` : '';
+            const statusText = (t.status === 'active' ? 'ACTIVE ✓' : t.status.toUpperCase()) + pingText;
             
             tr.innerHTML = `
                 <td><strong>${t.name}</strong></td>

@@ -27,6 +27,8 @@ pub struct Tunnel {
     pub quota_used_bytes: Option<i64>,
     pub speed_limit_kbps: Option<i32>,
     pub expires_at: Option<i64>,
+    pub last_probe_at: Option<i64>,
+    pub e2e_latency_ms: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -88,6 +90,8 @@ pub fn init_db(db_path: &Path) -> Result<()> {
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN quota_used_bytes INTEGER DEFAULT 0", []);
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN speed_limit_kbps INTEGER DEFAULT 0", []);
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN expires_at INTEGER DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN last_probe_at INTEGER DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN e2e_latency_ms REAL DEFAULT 0.0", []);
 
     // Create telemetry_logs table to store RTT/loss history
     conn.execute(
@@ -173,7 +177,7 @@ pub fn init_db(db_path: &Path) -> Result<()> {
 pub fn get_tunnels(db_path: &Path) -> Result<Vec<Tunnel>> {
     let conn = get_db_conn(db_path)?;
     let mut stmt = conn.prepare(
-        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx, port_hopping, quota_limit_bytes, quota_used_bytes, speed_limit_kbps, iran_node_id, kharej_node_id, expires_at FROM tunnels"
+        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx, port_hopping, quota_limit_bytes, quota_used_bytes, speed_limit_kbps, iran_node_id, kharej_node_id, expires_at, last_probe_at, e2e_latency_ms FROM tunnels"
     )?;
     
     let tunnel_iter = stmt.query_map([], |row| {
@@ -204,6 +208,8 @@ pub fn get_tunnels(db_path: &Path) -> Result<Vec<Tunnel>> {
             iran_node_id: row.get(19).unwrap_or(None),
             kharej_node_id: row.get(20).unwrap_or(None),
             expires_at: row.get(21).unwrap_or(Some(0)),
+            last_probe_at: row.get(22).unwrap_or(Some(0)),
+            e2e_latency_ms: row.get(23).unwrap_or(Some(0.0)),
         })
     })?;
 
@@ -217,7 +223,7 @@ pub fn get_tunnels(db_path: &Path) -> Result<Vec<Tunnel>> {
 pub fn get_tunnel_by_id(db_path: &Path, id: i64) -> Result<Option<Tunnel>> {
     let conn = get_db_conn(db_path)?;
     let mut stmt = conn.prepare(
-        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx, port_hopping, quota_limit_bytes, quota_used_bytes, speed_limit_kbps, iran_node_id, kharej_node_id, expires_at FROM tunnels WHERE id = ?1"
+        "SELECT id, name, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx, port_hopping, quota_limit_bytes, quota_used_bytes, speed_limit_kbps, iran_node_id, kharej_node_id, expires_at, last_probe_at, e2e_latency_ms FROM tunnels WHERE id = ?1"
     )?;
     
     let mut rows = stmt.query_map(params![id], |row| {
@@ -248,6 +254,8 @@ pub fn get_tunnel_by_id(db_path: &Path, id: i64) -> Result<Option<Tunnel>> {
             iran_node_id: row.get(19).unwrap_or(None),
             kharej_node_id: row.get(20).unwrap_or(None),
             expires_at: row.get(21).unwrap_or(Some(0)),
+            last_probe_at: row.get(22).unwrap_or(Some(0)),
+            e2e_latency_ms: row.get(23).unwrap_or(Some(0.0)),
         })
     })?;
 
@@ -297,6 +305,16 @@ pub fn update_tunnel_status(db_path: &Path, id: i64, status: &str) -> Result<()>
     conn.execute(
         "UPDATE tunnels SET status = ?1 WHERE id = ?2",
         params![status, id],
+    )?;
+    Ok(())
+}
+
+pub fn update_tunnel_probe(db_path: &Path, id: i64, status: &str, e2e_latency_ms: f64) -> Result<()> {
+    let conn = get_db_conn(db_path)?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    conn.execute(
+        "UPDATE tunnels SET status = ?1, e2e_latency_ms = ?2, last_probe_at = ?3 WHERE id = ?4",
+        params![status, e2e_latency_ms, now, id],
     )?;
     Ok(())
 }
