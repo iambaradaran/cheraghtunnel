@@ -250,6 +250,26 @@
                                 <label for="enable-multipath" style="margin: 0; font-size: 0.9rem;">🌐 Multipath IP Spraying</label>
                             </div>
                         </div>
+                        <div class="form-row" style="margin-bottom: 10px;">
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="enable-jitter" style="width: auto;">
+                                <label for="enable-jitter" style="margin: 0; font-size: 0.9rem;">🎲 Gaussian Jitter Engine</label>
+                            </div>
+                            <div class="form-group">
+                                <label for="jitter-ms" style="margin: 0; font-size: 0.9rem;">Max Jitter (ms)</label>
+                                <input type="number" id="jitter-ms" value="10" min="1" max="50">
+                            </div>
+                        </div>
+                        <div class="form-row" style="margin-bottom: 10px;">
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="enable-adaptive-fec" style="width: auto;">
+                                <label for="enable-adaptive-fec" style="margin: 0; font-size: 0.9rem;">📈 Adaptive FEC Tuning</label>
+                            </div>
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="enable-fallback" style="width: auto;">
+                                <label for="enable-fallback" style="margin: 0; font-size: 0.9rem;">🔄 Seamless Transport Fallback</label>
+                            </div>
+                        </div>
                     </div>
                 </div>
 

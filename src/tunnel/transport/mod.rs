@@ -34,10 +34,88 @@ pub struct TransportOptions {
     pub enable_ech: bool,
     #[serde(default)]
     pub enable_multipath: bool,
+
+    // New Transport Enhancements (v1.17.0)
+    #[serde(default)]
+    pub enable_jitter: bool,
+    #[serde(default = "default_jitter_ms")]
+    pub jitter_ms: u64,
+    #[serde(default)]
+    pub decoy_pool: Vec<String>,
+    #[serde(default)]
+    pub enable_adaptive_fec: bool,
+    #[serde(default)]
+    pub enable_fallback: bool,
 }
 
 fn default_fragment_size() -> usize {
     5
+}
+
+fn default_jitter_ms() -> u64 {
+    10
+}
+
+#[allow(dead_code)]
+const MIME_TYPES: &[&str] = &[
+    "video/mp4",
+    "video/webm",
+    "image/webp",
+    "image/avif",
+    "application/grpc",
+    "application/octet-stream",
+    "font/woff2",
+];
+
+#[allow(dead_code)]
+pub fn get_random_mime_type() -> &'static str {
+    let mut rng = rand::thread_rng();
+    MIME_TYPES[rng.gen_range(0..MIME_TYPES.len())]
+}
+
+#[allow(dead_code)]
+pub fn get_active_decoy(default_decoy: Option<&str>, decoy_pool: &[String]) -> String {
+    if !decoy_pool.is_empty() {
+        let mut rng = rand::thread_rng();
+        let idx = rng.gen_range(0..decoy_pool.len());
+        decoy_pool[idx].clone()
+    } else if let Some(d) = default_decoy {
+        d.to_string()
+    } else {
+        "www.microsoft.com".to_string()
+    }
+}
+
+#[allow(dead_code)]
+pub async fn apply_jitter(enable_jitter: bool, max_jitter_ms: u64) {
+    if enable_jitter && max_jitter_ms > 0 {
+        let mut rng = rand::thread_rng();
+        let u1: f64 = rng.gen_range(0.001..1.0);
+        let u2: f64 = rng.gen_range(0.001..1.0);
+        let z0 = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+        let mean = (max_jitter_ms as f64) / 2.0;
+        let std_dev = (max_jitter_ms as f64) / 4.0;
+        let jitter = (mean + z0 * std_dev).clamp(0.0, max_jitter_ms as f64) as u64;
+        if jitter > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(jitter)).await;
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn tune_tcp_socket(socket: &TcpStream) {
+    let _ = socket.set_nodelay(true);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = socket.as_raw_fd();
+        unsafe {
+            let tos: libc::c_int = 0x10;
+            libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_TOS, &tos as *const _ as *const _, std::mem::size_of::<libc::c_int>() as libc::socklen_to_t);
+            let quickack: libc::c_int = 1;
+            libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_QUICKACK, &quickack as *const _ as *const _, std::mem::size_of::<libc::c_int>() as libc::socklen_to_t);
+        }
+    }
 }
 
 const USER_AGENTS: &[&str] = &[

@@ -94,6 +94,15 @@ document.addEventListener('DOMContentLoaded', () => {
         dynamicOpts.enable_chaffing = document.getElementById('enable-chaffing').checked;
         dynamicOpts.enable_ech = document.getElementById('enable-ech').checked;
         dynamicOpts.enable_multipath = document.getElementById('enable-multipath').checked;
+        dynamicOpts.enable_jitter = document.getElementById('enable-jitter').checked;
+        dynamicOpts.jitter_ms = parseInt(document.getElementById('jitter-ms').value || 10);
+        dynamicOpts.enable_adaptive_fec = document.getElementById('enable-adaptive-fec').checked;
+        dynamicOpts.enable_fallback = document.getElementById('enable-fallback').checked;
+
+        const rawDecoy = document.getElementById('decoy-url').value;
+        if (rawDecoy && rawDecoy.includes(',')) {
+            dynamicOpts.decoy_pool = rawDecoy.split(',').map(s => s.trim()).filter(Boolean);
+        }
 
         const expDate = document.getElementById('expires-at').value;
         const expiresAtTs = expDate ? Math.floor(new Date(expDate).getTime() / 1000) : 0;
