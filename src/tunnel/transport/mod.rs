@@ -111,9 +111,9 @@ pub fn tune_tcp_socket(socket: &TcpStream) {
         let fd = socket.as_raw_fd();
         unsafe {
             let tos: libc::c_int = 0x10;
-            libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_TOS, &tos as *const _ as *const _, std::mem::size_of::<libc::c_int>() as libc::socklen_to_t);
+            libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_TOS, &tos as *const _ as *const _, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
             let quickack: libc::c_int = 1;
-            libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_QUICKACK, &quickack as *const _ as *const _, std::mem::size_of::<libc::c_int>() as libc::socklen_to_t);
+            libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_QUICKACK, &quickack as *const _ as *const _, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
         }
     }
 }
