@@ -42,6 +42,37 @@ if [ -z "$ADMIN_PASS" ]; then
 fi
 ADMIN_PASS=$(echo "$ADMIN_PASS" | tr -d '\r')
 
+# 4. Optional SSL Domain Setup
+read -p "Enable HTTPS / SSL Certificate for Panel? (y/N): " ENABLE_SSL < /dev/tty
+ENABLE_SSL=$(echo "$ENABLE_SSL" | tr -d '\r' | tr '[:upper:]' '[:lower:]')
+
+SSL_FLAGS=""
+DOMAIN_NAME=""
+
+if [ "$ENABLE_SSL" = "y" ] || [ "$ENABLE_SSL" = "yes" ]; then
+  read -p "Enter Domain Name (e.g. panel.netbros.ir): " DOMAIN_NAME < /dev/tty
+  DOMAIN_NAME=$(echo "$DOMAIN_NAME" | tr -d '\r')
+  
+  if [ -n "$DOMAIN_NAME" ]; then
+    echo "Installing certbot for SSL certificate acquisition..."
+    apt-get update && apt-get install -y certbot || true
+    
+    echo "Obtaining SSL certificate for $DOMAIN_NAME via certbot..."
+    systemctl stop nginx 2>/dev/null || true
+    certbot certonly --standalone -d "$DOMAIN_NAME" --non-interactive --agree-tos --register-unsafely-without-email || true
+    
+    CERT_PATH="/etc/letsencrypt/live/$DOMAIN_NAME/fullchain.pem"
+    KEY_PATH="/etc/letsencrypt/live/$DOMAIN_NAME/privkey.pem"
+    
+    if [ -f "$CERT_PATH" ] && [ -f "$KEY_PATH" ]; then
+      echo "SSL Certificate acquired successfully!"
+      SSL_FLAGS="--cert $CERT_PATH --key $KEY_PATH"
+    else
+      echo "[Warning] Certbot could not issue certificate for $DOMAIN_NAME. Falling back to HTTP."
+    fi
+  fi
+fi
+
 # Setup config and DB folders
 mkdir -p /etc/cheraghtunnel
 mkdir -p /var/lib/cheraghtunnel
@@ -163,7 +194,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/var/lib/cheraghtunnel
-ExecStart=/usr/local/bin/cheraghtunnel panel --port $PANEL_PORT --db-path /var/lib/cheraghtunnel/cheraghtunnel.db
+ExecStart=/usr/local/bin/cheraghtunnel panel --port $PANEL_PORT --db-path /var/lib/cheraghtunnel/cheraghtunnel.db $SSL_FLAGS
 Restart=always
 User=root
 

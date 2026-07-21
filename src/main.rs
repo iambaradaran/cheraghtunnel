@@ -26,6 +26,14 @@ enum Commands {
         /// Path to SQLite database file
         #[arg(short, long, default_value = "cheraghtunnel.db")]
         db_path: PathBuf,
+
+        /// Path to TLS certificate PEM file (optional for HTTPS)
+        #[arg(long)]
+        cert: Option<PathBuf>,
+
+        /// Path to TLS private key PEM file (optional for HTTPS)
+        #[arg(long)]
+        key: Option<PathBuf>,
     },
     /// Start the tunnel server listener (Iran server)
     Server {
@@ -113,13 +121,13 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Panel { port, db_path } => {
+        Commands::Panel { port, db_path, cert, key } => {
             println!("Initializing CheraghTunnel SQLite database at: {:?}", db_path);
             if let Err(e) = db::init_db(&db_path) {
                 eprintln!("Failed to initialize database: {}", e);
                 std::process::exit(1);
             }
-            if let Err(e) = api::run_panel(port, db_path).await {
+            if let Err(e) = api::run_panel(port, db_path, cert, key).await {
                 eprintln!("Web Panel execution error: {}", e);
                 std::process::exit(1);
             }

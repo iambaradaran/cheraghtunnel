@@ -84,7 +84,12 @@ pub struct AppState {
     pub login_limiter: LoginRateLimiter,
 }
 
-pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_panel(
+    port: u16,
+    db_path: PathBuf,
+    cert_path: Option<PathBuf>,
+    key_path: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Pre-create system monitor so CPU stats work correctly
     let mut sys = System::new_all();
     sys.refresh_cpu();
@@ -239,9 +244,17 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
         .merge(protected_routes)
         .layer(Extension(state));
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
-    println!("Web Panel UI available at: http://127.0.0.1:{}", port);
-    axum::serve(listener, app).await?;
+    if let (Some(cert), Some(key)) = (cert_path, key_path) {
+        let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
+        println!("Web Panel UI (HTTPS) available at: https://0.0.0.0:{}", port);
+        axum_server::bind_rustls(format!("0.0.0.0:{}", port).parse()?, config)
+            .serve(app.into_make_service())
+            .await?;
+    } else {
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+        println!("Web Panel UI (HTTP) available at: http://127.0.0.1:{}", port);
+        axum::serve(listener, app).await?;
+    }
     Ok(())
 }
 
