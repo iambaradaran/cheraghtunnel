@@ -109,15 +109,37 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
         }
     });
     
-    // Spawn background telemetry fetcher for remote nodes
+    // Spawn background telemetry fetcher & quota/expiry monitor
     let db_path_clone = db_path.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             
             if let Ok(tunnels) = db::get_tunnels(&db_path_clone) {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+
                 for t in tunnels {
                     if t.status == "active" {
+                        // Check expiry date
+                        if let Some(exp) = t.expires_at {
+                            if exp > 0 && now >= exp {
+                                println!("[PANEL] Tunnel '{}' (ID {:?}) expired. Shutting down...", t.name, t.id);
+                                let _ = db::update_tunnel_status(&db_path_clone, t.id.unwrap(), "expired");
+                                continue;
+                            }
+                        }
+                        // Check quota limit
+                        let quota_limit = t.quota_limit_bytes.unwrap_or(0);
+                        let quota_used = t.quota_used_bytes.unwrap_or(0);
+                        if quota_limit > 0 && quota_used >= quota_limit {
+                            println!("[PANEL] Tunnel '{}' (ID {:?}) quota limit reached. Shutting down...", t.name, t.id);
+                            let _ = db::update_tunnel_status(&db_path_clone, t.id.unwrap(), "quota_exceeded");
+                            continue;
+                        }
+
                         if let Some(iran_id) = t.iran_node_id {
                             if let Ok(Some(iran_node)) = db::get_node_by_id(&db_path_clone, iran_id) {
                                 let api_port = 18000 + t.id.unwrap_or(0) as u16;
@@ -133,8 +155,52 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
                                         let loss = json["packet_loss"].as_f64().unwrap_or(100.0);
                                         
                                         let _ = db::update_tunnel_speeds(&db_path_clone, t.id.unwrap(), rx_delta, tx_delta, speed_rx, speed_tx);
+                                        let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), rtt_ms, loss);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // Spawn background Node Health Checker & Automatic Failover Worker
+    let db_path_node_check = db_path.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            if let Ok(nodes) = db::get_nodes(&db_path_node_check) {
+                for node in nodes {
+                    if let Some(node_id) = node.id {
+                        let addr = format!("{}:{}", node.host, node.port);
+                        let start = std::time::Instant::now();
+                        let (status, latency) = match tokio::time::timeout(
+                            tokio::time::Duration::from_secs(3),
+                            tokio::net::TcpStream::connect(&addr),
+                        ).await {
+                            Ok(Ok(_)) => ("active", start.elapsed().as_secs_f64() * 1000.0),
+                            _ => ("unreachable", 999.0),
+                        };
+                        let _ = db::update_node_health(&db_path_node_check, node_id, status, latency);
+
+                        // Failover check if node is unreachable
+                        if status == "unreachable" && (node.role == "kharej" || node.role == "both") {
+                            if let Ok(tunnels) = db::get_tunnels(&db_path_node_check) {
+                                for mut t in tunnels {
+                                    if t.kharej_node_id == Some(node_id) && t.status == "active" {
+                                        let backup_nodes: Vec<_> = db::get_nodes(&db_path_node_check)
+                                            .unwrap_or_default()
+                                            .into_iter()
+                                            .filter(|n| n.id != Some(node_id) && n.status.as_deref() == Some("active") && (n.role == "kharej" || n.role == "both"))
+                                            .collect();
                                         
-                                        let _ = db::insert_telemetry(&db_path_clone, t.id.unwrap(), rtt_ms, loss);
+                                        if let Some(backup) = backup_nodes.first() {
+                                            println!("[FAILOVER] Kharej Node '{}' is unreachable. Failing over Tunnel '{}' to backup Node '{}'", node.name, t.name, backup.name);
+                                            t.kharej_node_id = backup.id;
+                                            let _ = db::update_tunnel(&db_path_node_check, t.id.unwrap(), &t);
+                                        }
                                     }
                                 }
                             }
@@ -152,6 +218,7 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
         .route("/style.css", get(static_handler))
         .route("/app.js", get(static_handler))
         .route("/api/auth/login", post(login_handler))
+        .route("/api/ws/telemetry", get(ws_telemetry_handler))
         // Node script is fetched by curl from remote servers, so it stays public
         .route("/api/tunnels/:id/node-script", get(node_script_handler));
 
@@ -298,7 +365,7 @@ async fn telemetry_handler(
     Extension(state): Extension<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> impl IntoResponse {
-    match db::get_telemetry_logs(&state.db_path, id, 100) {
+    match db::get_recent_telemetry(&state.db_path, id, 100) {
         Ok(logs) => {
             let list: Vec<serde_json::Value> = logs.into_iter().map(|(rtt, loss, ts)| {
                 serde_json::json!({
@@ -880,4 +947,50 @@ async fn restore_handler(
     }
     
     (StatusCode::BAD_REQUEST, "No file uploaded".to_string()).into_response()
+}
+
+// ------------------------------------------------------------------
+// Real-Time WebSocket Telemetry Stream
+// ------------------------------------------------------------------
+
+async fn ws_telemetry_handler(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    Extension(state): Extension<Arc<AppState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(|socket| handle_ws_telemetry(socket, state))
+}
+
+async fn handle_ws_telemetry(mut socket: axum::extract::ws::WebSocket, state: Arc<AppState>) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+    loop {
+        interval.tick().await;
+        let tunnels = db::get_tunnels(&state.db_path).unwrap_or_default();
+        let nodes = db::get_nodes(&state.db_path).unwrap_or_default();
+
+        let sys = state.system_monitor.lock().await;
+        let cpu_usage = sys.global_cpu_info().cpu_usage();
+        let total_mem = sys.total_memory();
+        let mem_usage = if total_mem > 0 {
+            (sys.used_memory() as f32 / total_mem as f32) * 100.0
+        } else {
+            0.0
+        };
+        drop(sys);
+        
+        let payload = serde_json::json!({
+            "type": "telemetry_update",
+            "cpu_usage": cpu_usage,
+            "mem_usage": mem_usage,
+            "tunnels": tunnels,
+            "nodes": nodes,
+            "timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        });
+
+        if socket.send(axum::extract::ws::Message::Text(payload.to_string())).await.is_err() {
+            break;
+        }
+    }
 }

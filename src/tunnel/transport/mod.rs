@@ -26,6 +26,14 @@ pub struct TransportOptions {
     pub fragment_size: usize,
     #[serde(default)]
     pub randomize_ua: bool,
+    #[serde(default)]
+    pub enable_padding: bool,
+    #[serde(default)]
+    pub enable_chaffing: bool,
+    #[serde(default)]
+    pub enable_ech: bool,
+    #[serde(default)]
+    pub enable_multipath: bool,
 }
 
 fn default_fragment_size() -> usize {
@@ -1319,7 +1327,7 @@ where
 // Helper to construct a standard TLS 1.2 ClientHello binary packet spoofing SNI.
 // The ClientRandom field is dynamic, composed of a 4-byte big-endian timestamp
 // and a 28-byte hash of the token + timestamp, preventing replay attacks.
-fn build_tls_client_hello(decoy: &str, token: &str) -> Vec<u8> {
+fn build_tls_client_hello(decoy: &str, token: &str, opts: &TransportOptions) -> Vec<u8> {
     use sha2::{Sha256, Digest};
     use std::time::{SystemTime, UNIX_EPOCH};
     use rand::Rng;
@@ -1421,6 +1429,26 @@ fn build_tls_client_hello(decoy: &str, token: &str) -> Vec<u8> {
     extensions.extend_from_slice(&[0x00, 0x33]); // Extension Type: Key Share
     extensions.extend_from_slice(&(key_share.len() as u16).to_be_bytes());
     extensions.extend_from_slice(&key_share);
+
+    if opts.enable_ech {
+        // 7. Encrypted ClientHello (ECH) extension 0xfe0d
+        let mut ech_payload = Vec::new();
+        ech_payload.extend_from_slice(&[0x00, 0x01]); // Outer ClientHello
+        ech_payload.extend_from_slice(&[0x00, 0x20, 0x00, 0x01, 0x00, 0x01]); // CipherSuite: DHKEM(X25519, HKDF-SHA256), AES-128-GCM
+        ech_payload.push(0x01); // Config ID
+        let mut enc_bytes = [0u8; 32];
+        rand::thread_rng().fill(&mut enc_bytes);
+        ech_payload.extend_from_slice(&[0x00, 0x20]);
+        ech_payload.extend_from_slice(&enc_bytes);
+        let mut inner_enc = [0u8; 128];
+        rand::thread_rng().fill(&mut inner_enc);
+        ech_payload.extend_from_slice(&(inner_enc.len() as u16).to_be_bytes());
+        ech_payload.extend_from_slice(&inner_enc);
+
+        extensions.extend_from_slice(&[0xfe, 0x0d]); // Extension Type: ECH (0xfe0d)
+        extensions.extend_from_slice(&(ech_payload.len() as u16).to_be_bytes());
+        extensions.extend_from_slice(&ech_payload);
+    }
 
     let ext_len = extensions.len() as u16;
     body.extend_from_slice(&ext_len.to_be_bytes());
@@ -1740,7 +1768,7 @@ pub async fn client_handshake(
         }
         "mirage" | "realitymux" | "spectre" => {
             // Write standard TLS ClientHello spoofing the decoy domain
-            let hello = build_tls_client_hello(&decoy_str, token);
+            let hello = build_tls_client_hello(&decoy_str, token, &opts);
             
             if opts.fragment_sni {
                 let split = std::cmp::min(opts.fragment_size, hello.len());

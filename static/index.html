@@ -201,6 +201,10 @@
                                 <label for="speed-limit">Speed Limit (KB/s - 0 for unlimited)</label>
                                 <input type="number" id="speed-limit" value="0" min="0" placeholder="e.g. 5000">
                             </div>
+                            <div class="form-group">
+                                <label for="expires-at">Expiration Date</label>
+                                <input type="date" id="expires-at">
+                            </div>
                         </div>
                         <div class="form-group" style="margin-bottom: 20px;">
                             <label for="backup-ips">Backup Iran IPs (Comma separated - Optional)</label>
@@ -224,6 +228,26 @@
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="tunnel-hopping" style="width: auto;">
                                 <label for="tunnel-hopping" style="margin: 0; font-size: 0.9rem;">Enable Port Hopping</label>
+                            </div>
+                        </div>
+                        <div class="form-row" style="margin-bottom: 10px;">
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="enable-padding" style="width: auto;">
+                                <label for="enable-padding" style="margin: 0; font-size: 0.9rem;">🔒 Dynamic Packet Padding</label>
+                            </div>
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="enable-chaffing" style="width: auto;">
+                                <label for="enable-chaffing" style="margin: 0; font-size: 0.9rem;">📡 Dummy Chaffing Traffic</label>
+                            </div>
+                        </div>
+                        <div class="form-row" style="margin-bottom: 10px;">
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="enable-ech" style="width: auto;">
+                                <label for="enable-ech" style="margin: 0; font-size: 0.9rem;">🛡️ Encrypted ClientHello (ECH)</label>
+                            </div>
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="enable-multipath" style="width: auto;">
+                                <label for="enable-multipath" style="margin: 0; font-size: 0.9rem;">🌐 Multipath IP Spraying</label>
                             </div>
                         </div>
                     </div>
@@ -324,6 +348,10 @@
                                 <label for="edit-speed-limit">Speed Limit (KB/s - 0 for unlimited)</label>
                                 <input type="number" id="edit-speed-limit" value="0" min="0" placeholder="e.g. 5000">
                             </div>
+                            <div class="form-group">
+                                <label for="edit-expires-at">Expiration Date</label>
+                                <input type="date" id="edit-expires-at">
+                            </div>
                         </div>
                         <div class="form-group" style="margin-bottom: 20px;">
                             <label for="edit-backup-ips">Backup Iran IPs (Comma separated - Optional)</label>
@@ -347,6 +375,26 @@
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="edit-tunnel-hopping" style="width: auto;">
                                 <label for="edit-tunnel-hopping" style="margin: 0; font-size: 0.9rem;">Enable Port Hopping</label>
+                            </div>
+                        </div>
+                        <div class="form-row" style="margin-bottom: 10px;">
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="edit-enable-padding" style="width: auto;">
+                                <label for="edit-enable-padding" style="margin: 0; font-size: 0.9rem;">🔒 Dynamic Packet Padding</label>
+                            </div>
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="edit-enable-chaffing" style="width: auto;">
+                                <label for="edit-enable-chaffing" style="margin: 0; font-size: 0.9rem;">📡 Dummy Chaffing Traffic</label>
+                            </div>
+                        </div>
+                        <div class="form-row" style="margin-bottom: 10px;">
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="edit-enable-ech" style="width: auto;">
+                                <label for="edit-enable-ech" style="margin: 0; font-size: 0.9rem;">🛡️ Encrypted ClientHello (ECH)</label>
+                            </div>
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="edit-enable-multipath" style="width: auto;">
+                                <label for="edit-enable-multipath" style="margin: 0; font-size: 0.9rem;">🌐 Multipath IP Spraying</label>
                             </div>
                         </div>
                     </div>

@@ -90,6 +90,13 @@ document.addEventListener('DOMContentLoaded', () => {
         dynamicOpts.fragment_sni = document.getElementById('fragment-sni').checked;
         dynamicOpts.fragment_size = parseInt(document.getElementById('fragment-size').value || 5);
         dynamicOpts.randomize_ua = document.getElementById('randomize-ua').checked;
+        dynamicOpts.enable_padding = document.getElementById('enable-padding').checked;
+        dynamicOpts.enable_chaffing = document.getElementById('enable-chaffing').checked;
+        dynamicOpts.enable_ech = document.getElementById('enable-ech').checked;
+        dynamicOpts.enable_multipath = document.getElementById('enable-multipath').checked;
+
+        const expDate = document.getElementById('expires-at').value;
+        const expiresAtTs = expDate ? Math.floor(new Date(expDate).getTime() / 1000) : 0;
 
         const payload = {
             name: document.getElementById('tunnel-name').value,
@@ -108,6 +115,7 @@ document.addEventListener('DOMContentLoaded', () => {
             port_hopping: document.getElementById('tunnel-hopping').checked ? 1 : 0,
             quota_limit_bytes: Math.round(parseFloat(document.getElementById('quota-limit').value || 0) * 1024 * 1024 * 1024),
             speed_limit_kbps: parseInt(document.getElementById('speed-limit').value || 0),
+            expires_at: expiresAtTs,
             status: "inactive",
             stats_rx: 0,
             stats_tx: 0,
@@ -235,6 +243,36 @@ document.addEventListener('DOMContentLoaded', () => {
 
 });
 
+let wsInstance = null;
+
+function initWebSocketTelemetry() {
+    if (wsInstance) return;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/api/ws/telemetry`;
+    wsInstance = new WebSocket(wsUrl);
+
+    wsInstance.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'telemetry_update') {
+                if (data.cpu_usage !== undefined) {
+                    document.getElementById('cpu-text').innerText = `${Math.round(data.cpu_usage)}%`;
+                    document.getElementById('cpu-circle').setAttribute('stroke-dasharray', `${data.cpu_usage}, 100`);
+                }
+                if (data.mem_usage !== undefined) {
+                    document.getElementById('ram-text').innerText = `${Math.round(data.mem_usage)}%`;
+                    document.getElementById('ram-circle').setAttribute('stroke-dasharray', `${data.mem_usage}, 100`);
+                }
+            }
+        } catch (e) {}
+    };
+
+    wsInstance.onclose = () => {
+        wsInstance = null;
+        setTimeout(initWebSocketTelemetry, 3000);
+    };
+}
+
 function showDashboard() {
     document.getElementById('login-container').style.display = 'none';
     document.getElementById('dashboard-container').style.display = 'block';
@@ -243,6 +281,7 @@ function showDashboard() {
     loadTunnels();
     loadStats();
     loadNodes();
+    initWebSocketTelemetry();
 
     // Start polling stats and tunnels
     setInterval(loadStats, 3000);
@@ -488,10 +527,18 @@ async function showEditModal(id) {
             document.getElementById('edit-fragment-sni').checked = !!initialOpts.fragment_sni;
             document.getElementById('edit-fragment-size').value = initialOpts.fragment_size !== undefined ? initialOpts.fragment_size : 5;
             document.getElementById('edit-randomize-ua').checked = !!initialOpts.randomize_ua;
+            document.getElementById('edit-enable-padding').checked = !!initialOpts.enable_padding;
+            document.getElementById('edit-enable-chaffing').checked = !!initialOpts.enable_chaffing;
+            document.getElementById('edit-enable-ech').checked = !!initialOpts.enable_ech;
+            document.getElementById('edit-enable-multipath').checked = !!initialOpts.enable_multipath;
         } else {
             document.getElementById('edit-fragment-sni').checked = false;
             document.getElementById('edit-fragment-size').value = 5;
             document.getElementById('edit-randomize-ua').checked = false;
+            document.getElementById('edit-enable-padding').checked = false;
+            document.getElementById('edit-enable-chaffing').checked = false;
+            document.getElementById('edit-enable-ech').checked = false;
+            document.getElementById('edit-enable-multipath').checked = false;
         }
 
         renderDynamicOptions(t.protocol, 'edit-dynamic-options-container', initialOpts);
@@ -500,6 +547,12 @@ async function showEditModal(id) {
         document.getElementById('edit-tunnel-hopping').checked = t.port_hopping === 1;
         document.getElementById('edit-quota-limit').value = t.quota_limit_bytes ? (t.quota_limit_bytes / (1024 * 1024 * 1024)).toFixed(1) : 0;
         document.getElementById('edit-speed-limit').value = t.speed_limit_kbps || 0;
+        if (t.expires_at && t.expires_at > 0) {
+            const dateObj = new Date(t.expires_at * 1000);
+            document.getElementById('edit-expires-at').value = dateObj.toISOString().split('T')[0];
+        } else {
+            document.getElementById('edit-expires-at').value = '';
+        }
         document.getElementById('edit-tunnel-iran-select').value = t.iran_node_id || '';
         document.getElementById('edit-tunnel-kharej-select').value = t.kharej_node_id || '';
         if (window.toggleDecoyVisibility) {
@@ -551,6 +604,13 @@ document.addEventListener('DOMContentLoaded', () => {
         dynamicOpts.fragment_sni = document.getElementById('edit-fragment-sni').checked;
         dynamicOpts.fragment_size = parseInt(document.getElementById('edit-fragment-size').value || 5);
         dynamicOpts.randomize_ua = document.getElementById('edit-randomize-ua').checked;
+        dynamicOpts.enable_padding = document.getElementById('edit-enable-padding').checked;
+        dynamicOpts.enable_chaffing = document.getElementById('edit-enable-chaffing').checked;
+        dynamicOpts.enable_ech = document.getElementById('edit-enable-ech').checked;
+        dynamicOpts.enable_multipath = document.getElementById('edit-enable-multipath').checked;
+
+        const expDate = document.getElementById('edit-expires-at').value;
+        const expiresAtTs = expDate ? Math.floor(new Date(expDate).getTime() / 1000) : 0;
 
         const payload = {
             id: parseInt(id),
@@ -570,9 +630,12 @@ document.addEventListener('DOMContentLoaded', () => {
             port_hopping: document.getElementById('edit-tunnel-hopping').checked ? 1 : 0,
             quota_limit_bytes: Math.round(parseFloat(document.getElementById('edit-quota-limit').value || 0) * 1024 * 1024 * 1024),
             speed_limit_kbps: parseInt(document.getElementById('edit-speed-limit').value || 0),
+            expires_at: expiresAtTs,
             status: "inactive",
             stats_rx: 0,
             stats_tx: 0,
+            stats_speed_rx: 0,
+            stats_speed_tx: 0,
             stats_speed_rx: 0,
             stats_speed_tx: 0
         };

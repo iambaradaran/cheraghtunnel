@@ -660,7 +660,7 @@ pub async fn run_client(
 
             loop {
                 let current_protocol = &protocol_list[proto_index % protocol_list.len()];
-                let current_ip = &ips_clone[ip_index % ips_clone.len()];
+                let current_ip = &ips_clone[(worker_id + ip_index) % ips_clone.len()];
                 let active_control_port = if port_hopping {
                     let epoch = std::time::SystemTime::now()
                         .duration_since(std::time::SystemTime::UNIX_EPOCH)
