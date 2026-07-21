@@ -265,7 +265,11 @@ pub async fn run_panel(
 
                             let latency = start.elapsed().as_secs_f64() * 1000.0;
 
-                            let _ = db::update_tunnel_probe(&db_path_tunnel_probe, t_id, "active", latency);
+                            if latency < 500.0 {
+                                let _ = db::update_tunnel_probe(&db_path_tunnel_probe, t_id, "active", latency);
+                            } else {
+                                let _ = db::update_tunnel_probe(&db_path_tunnel_probe, t_id, "unreachable", latency);
+                            }
                         }
                         _ => {
                             let _ = db::update_tunnel_probe(&db_path_tunnel_probe, t_id, "unreachable", 999.0);
