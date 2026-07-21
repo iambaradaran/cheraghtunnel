@@ -161,7 +161,14 @@ pub async fn run_panel(
                                         
                                         let _ = db::update_tunnel_speeds(&db_path_clone, t.id.unwrap(), rx_delta, tx_delta, speed_rx, speed_tx);
                                         let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), rtt_ms, loss);
+
+                                        let probe_status = if rtt_ms < 500.0 && loss < 90.0 { "active" } else { "unreachable" };
+                                        let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), probe_status, rtt_ms);
+                                    } else {
+                                        let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "unreachable", 999.0);
                                     }
+                                } else {
+                                    let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "unreachable", 999.0);
                                 }
                             }
                         }
