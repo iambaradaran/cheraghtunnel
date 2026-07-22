@@ -332,7 +332,7 @@ async function loadTunnels() {
             const statusClass = t.status === 'active' ? 'active' : (t.status === 'deploying' ? 'deploying' : (t.status === 'error' || t.status === 'unreachable' ? 'error' : 'inactive'));
             const statusText = t.status === 'active' ? 'ACTIVE' : t.status.toUpperCase();
             
-            const pingHtml = (t.status === 'active' && t.e2e_latency_ms && t.e2e_latency_ms > 0 && t.e2e_latency_ms < 500)
+            const pingHtml = (t.status === 'active' && t.e2e_latency_ms !== null && t.e2e_latency_ms !== undefined && t.e2e_latency_ms >= 0 && t.e2e_latency_ms < 500)
                 ? `<span class="ping-badge"><span class="ping-icon">⚡</span> ${Math.round(t.e2e_latency_ms)} ms</span>`
                 : `<span class="ping-badge timeout">--</span>`;
 

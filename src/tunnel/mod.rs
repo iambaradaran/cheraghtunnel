@@ -225,9 +225,9 @@ pub async fn run_server(
     if let Some(port) = api_port {
         let controls_ping = active_controls.clone();
         tokio::spawn(async move {
-            // Background ping loop
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                interval.tick().await;
                 let pool = controls_ping.lock().await;
                 if !pool.is_empty() {
                     let mut ctrl = pool[0].clone();

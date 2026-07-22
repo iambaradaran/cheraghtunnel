@@ -145,32 +145,28 @@ pub async fn run_panel(
                             continue;
                         }
 
-                        if let Some(iran_id) = t.iran_node_id {
-                            if let Ok(Some(iran_node)) = db::get_node_by_id(&db_path_clone, iran_id) {
-                                let api_port = 18000 + t.id.unwrap_or(0) as u16;
-                                let url = format!("http://{}:{}/api/stats", iran_node.host, api_port);
+                        let api_port = 18000 + t.id.unwrap_or(0) as u16;
+                        let url = format!("http://127.0.0.1:{}/api/stats", api_port);
+                        
+                        if let Ok(resp) = reqwest::get(&url).await {
+                            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                let rx_delta = json["rx_delta"].as_u64().unwrap_or(0);
+                                let tx_delta = json["tx_delta"].as_u64().unwrap_or(0);
+                                let speed_rx = json["speed_rx"].as_u64().unwrap_or(0);
+                                let speed_tx = json["speed_tx"].as_u64().unwrap_or(0);
+                                let rtt_ms = json["rtt_ms"].as_f64().unwrap_or(999.0);
+                                let loss = json["packet_loss"].as_f64().unwrap_or(100.0);
                                 
-                                if let Ok(resp) = reqwest::get(&url).await {
-                                    if let Ok(json) = resp.json::<serde_json::Value>().await {
-                                        let rx_delta = json["rx_delta"].as_u64().unwrap_or(0);
-                                        let tx_delta = json["tx_delta"].as_u64().unwrap_or(0);
-                                        let speed_rx = json["speed_rx"].as_u64().unwrap_or(0);
-                                        let speed_tx = json["speed_tx"].as_u64().unwrap_or(0);
-                                        let rtt_ms = json["rtt_ms"].as_f64().unwrap_or(999.0);
-                                        let loss = json["packet_loss"].as_f64().unwrap_or(100.0);
-                                        
-                                        let _ = db::update_tunnel_speeds(&db_path_clone, t.id.unwrap(), rx_delta, tx_delta, speed_rx, speed_tx);
-                                        let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), rtt_ms, loss);
+                                let _ = db::update_tunnel_speeds(&db_path_clone, t.id.unwrap(), rx_delta, tx_delta, speed_rx, speed_tx);
+                                let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), rtt_ms, loss);
 
-                                        let probe_status = if rtt_ms < 500.0 && loss < 90.0 { "active" } else { "unreachable" };
-                                        let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), probe_status, rtt_ms);
-                                    } else {
-                                        let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "unreachable", 999.0);
-                                    }
-                                } else {
-                                    let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "unreachable", 999.0);
-                                }
+                                let probe_status = if rtt_ms < 500.0 && loss < 90.0 { "active" } else { "unreachable" };
+                                let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), probe_status, rtt_ms);
+                            } else {
+                                let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "unreachable", 999.0);
                             }
+                        } else {
+                            let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "unreachable", 999.0);
                         }
                     }
                 }
