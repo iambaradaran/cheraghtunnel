@@ -114,6 +114,21 @@ pub async fn run_panel(
         }
     });
     
+async fn measure_tcp_ping(host: &str, port: u16) -> Option<f64> {
+    let addr = format!("{}:{}", host, port);
+    let start = std::time::Instant::now();
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(2000),
+        tokio::net::TcpStream::connect(&addr)
+    ).await {
+        Ok(Ok(_stream)) => {
+            let rtt = start.elapsed().as_secs_f64() * 1000.0;
+            Some(rtt)
+        }
+        _ => None,
+    }
+}
+
     // Spawn background telemetry fetcher & quota/expiry monitor
     let db_path_clone = db_path.clone();
     tokio::spawn(async move {
@@ -154,18 +169,26 @@ pub async fn run_panel(
                                 let tx_delta = json["tx_delta"].as_u64().unwrap_or(0);
                                 let speed_rx = json["speed_rx"].as_u64().unwrap_or(0);
                                 let speed_tx = json["speed_tx"].as_u64().unwrap_or(0);
-                                let rtt_ms = json["rtt_ms"].as_f64().unwrap_or(999.0);
-                                let loss = json["packet_loss"].as_f64().unwrap_or(100.0);
                                 
                                 let _ = db::update_tunnel_speeds(&db_path_clone, t.id.unwrap(), rx_delta, tx_delta, speed_rx, speed_tx);
-                                let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), rtt_ms, loss);
+                            }
+                        }
 
-                                let probe_status = if rtt_ms < 500.0 && loss < 90.0 { "active" } else { "unreachable" };
-                                let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), probe_status, rtt_ms);
+                        let node_ping = if let Some(k_id) = t.kharej_node_id {
+                            if let Ok(Some(k_node)) = db::get_node_by_id(&db_path_clone, k_id) {
+                                measure_tcp_ping(&k_node.host, k_node.port).await
                             } else {
-                                let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "unreachable", 999.0);
+                                None
                             }
                         } else {
+                            None
+                        };
+
+                        if let Some(rtt) = node_ping {
+                            let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), rtt, 0.0);
+                            let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "active", rtt);
+                        } else {
+                            let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), 999.0, 100.0);
                             let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "unreachable", 999.0);
                         }
                     }
