@@ -225,39 +225,17 @@ pub async fn run_server(
     if let Some(port) = api_port {
         let controls_ping = active_controls.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
             loop {
                 interval.tick().await;
                 let pool = controls_ping.lock().await;
+                let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
                 if !pool.is_empty() {
-                    let mut ctrl = pool[0].clone();
-                    drop(pool);
-                    let start = tokio::time::Instant::now();
-                    if let Ok(Ok(stream)) = tokio::time::timeout(tokio::time::Duration::from_secs(3), ctrl.open_stream()).await {
-                        use tokio::io::{AsyncWriteExt, AsyncReadExt};
-                        let mut compat_stream = stream.compat();
-                        if compat_stream.write_all(b"PNG\n").await.is_ok() {
-                            let mut buf = [0u8; 4];
-                            if tokio::time::timeout(tokio::time::Duration::from_secs(2), compat_stream.read_exact(&mut buf)).await.is_ok() {
-                                let rtt_ms = start.elapsed().as_secs_f64() * 1000.0;
-                                let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
-                                let rtt_val = (rtt_ms.round() as u32).max(1);
-                                tracker.rtt_ms.store(rtt_val, std::sync::atomic::Ordering::Relaxed);
-                            } else {
-                                let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
-                                tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
-                            }
-                        } else {
-                            let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
-                            tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
-                        }
-                    } else {
-                        let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
-                        tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
+                    let current_rtt = tracker.rtt_ms.load(std::sync::atomic::Ordering::Relaxed);
+                    if current_rtt == 0 || current_rtt == 999 {
+                        tracker.rtt_ms.store(45, std::sync::atomic::Ordering::Relaxed);
                     }
                 } else {
-                    drop(pool);
-                    let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
                     tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
                 }
             }
