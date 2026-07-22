@@ -234,11 +234,23 @@ pub async fn run_server(
                     drop(pool);
                     let start = tokio::time::Instant::now();
                     if let Ok(Ok(stream)) = tokio::time::timeout(tokio::time::Duration::from_secs(3), ctrl.open_stream()).await {
-                        let rtt_ms = start.elapsed().as_secs_f64() * 1000.0;
-                        drop(stream);
-                        let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
-                        let rtt_val = (rtt_ms as u32).max(1);
-                        tracker.rtt_ms.store(rtt_val, std::sync::atomic::Ordering::Relaxed);
+                        use tokio::io::{AsyncWriteExt, AsyncReadExt};
+                        let mut compat_stream = stream.compat();
+                        if compat_stream.write_all(b"PNG\n").await.is_ok() {
+                            let mut buf = [0u8; 4];
+                            if tokio::time::timeout(tokio::time::Duration::from_secs(2), compat_stream.read_exact(&mut buf)).await.is_ok() {
+                                let rtt_ms = start.elapsed().as_secs_f64() * 1000.0;
+                                let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
+                                let rtt_val = (rtt_ms.round() as u32).max(1);
+                                tracker.rtt_ms.store(rtt_val, std::sync::atomic::Ordering::Relaxed);
+                            } else {
+                                let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
+                                tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        } else {
+                            let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
+                            tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
+                        }
                     } else {
                         let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
                         tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
@@ -893,6 +905,10 @@ pub async fn run_client(
                                 
                                 match read_res {
                                     Ok(Ok(_)) => {
+                                        if &prefix[..4] == b"PNG\n" || &prefix[..4] == b"PING" {
+                                            let _ = compat_stream.write_all(b"PONG").await;
+                                            return;
+                                        }
                                         let is_udp = &prefix[..4] == b"UDP\n";
                                         if is_udp {
                                             // Handle UDP forwarding

@@ -127,7 +127,7 @@ pub async fn run_panel(
                     .as_secs() as i64;
 
                 for t in tunnels {
-                    if t.status == "active" {
+                    if t.status == "active" || t.status == "unreachable" {
                         // Check expiry date
                         if let Some(exp) = t.expires_at {
                             if exp > 0 && now >= exp {
