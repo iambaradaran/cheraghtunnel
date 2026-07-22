@@ -330,9 +330,12 @@ async function loadTunnels() {
             
             // Format status badge
             const statusClass = t.status === 'active' ? 'active' : (t.status === 'deploying' ? 'deploying' : (t.status === 'error' || t.status === 'unreachable' ? 'error' : 'inactive'));
-            const pingText = (t.status === 'active' && t.e2e_latency_ms && t.e2e_latency_ms > 0 && t.e2e_latency_ms < 500) ? ` (${Math.round(t.e2e_latency_ms)}ms)` : '';
-            const statusText = (t.status === 'active' ? 'ACTIVE ✓' : t.status.toUpperCase()) + pingText;
+            const statusText = t.status === 'active' ? 'ACTIVE' : t.status.toUpperCase();
             
+            const pingHtml = (t.status === 'active' && t.e2e_latency_ms && t.e2e_latency_ms > 0 && t.e2e_latency_ms < 500)
+                ? `<span class="ping-badge"><span class="ping-icon">⚡</span> ${Math.round(t.e2e_latency_ms)} ms</span>`
+                : `<span class="ping-badge timeout">--</span>`;
+
             tr.innerHTML = `
                 <td><strong>${t.name}</strong></td>
                 <td><span class="proto-name">${t.protocol.toUpperCase()}</span></td>
@@ -345,6 +348,7 @@ async function loadTunnels() {
                         ${statusText}
                     </div>
                 </td>
+                <td>${pingHtml}</td>
                 <td>
                     <span style="color: var(--color-cyan); font-weight: 500;">↓ ${formatSpeed(t.stats_speed_rx)}</span> / 
                     <span style="color: var(--color-orange); font-weight: 500;">↑ ${formatSpeed(t.stats_speed_tx)}</span>

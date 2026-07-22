@@ -531,17 +531,39 @@ td {
     background: var(--text-secondary);
 }
 
-.status-pill.error {
-    background: rgba(255, 51, 102, 0.1);
-    color: var(--color-red);
-}
-
 .status-pill.error .dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
     background: var(--color-red);
     box-shadow: 0 0 8px var(--color-red);
+}
+
+/* Ping Micro Badge */
+.ping-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: rgba(168, 85, 247, 0.12);
+    color: #c084fc;
+    border: 1px solid rgba(168, 85, 247, 0.25);
+    white-space: nowrap;
+    box-shadow: 0 0 8px rgba(168, 85, 247, 0.1);
+}
+
+.ping-badge.timeout {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-secondary);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: none;
+}
+
+.ping-icon {
+    font-size: 0.75rem;
 }
 
 /* Modals styling */
